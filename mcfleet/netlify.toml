@@ -4,3 +4,7 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  # Undgå build-fejl når smart scan ser "sk-..." i bundle (fx fra REACT_APP_* API-nøgler).
+  # Bedste løsning: fjern REACT_APP_ANTHROPIC_KEY fra Netlify hvis den ikke bruges i appen,
+  # eller brug Netlify Functions til hemmelige nøgler (ikke REACT_APP_).
+  SECRETS_SCAN_SMART_DETECTION_ENABLED = "false"

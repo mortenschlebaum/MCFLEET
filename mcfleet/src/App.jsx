@@ -490,16 +490,16 @@ const genSlutseddel = (mc, køber) => {
     txt("Køber",col2,y,10,true,[20,20,20]);
     y += 3;
 
-    const sælger = ["Lisbeths Køreskole ApS","Vranderupvej 15","6000 Kolding","29414249"];
-    const køberArr = [køber.navn||"",køber.adresse||"",køber.postby||"",køber.telefon||""];
-    const feltLabels = ["Navn","Adresse","Postnr./by","Telefon"];
+    const sælger = ["Lisbeths Køreskole ApS","Vranderupvej 15","6000 Kolding","29414249",""];
+    const køberArr = [køber.navn||"",køber.adresse||"",køber.postby||"",køber.telefon||"",køber.email||""];
+    const feltLabels = ["Navn","Adresse","Postnr./by","Telefon","Email"];
 
     feltLabels.forEach((label,i) => {
       const fy = y + i*13;
       felt(label, sælger[i], M, fy, halfW);
       felt(label, køberArr[i], col2, fy, halfW);
     });
-    y += 56;
+    y += 69;
 
     ln(M,y,W-M,y);
     y += 4;
@@ -580,6 +580,14 @@ const genSlutseddel = (mc, køber) => {
     y = sektionHoved("Sælger oplyser",y);
     y += 5;
 
+    // Svar-map: nøgle → "ja"|"nej"|"vednot"
+    const svar = {
+      "1)": køber.s1||"nej", "2)": køber.s2||"nej", "3)": køber.s3||"nej",
+      "4)": køber.s4||"nej", "5)": køber.s5||"skolekørsel",
+      "6)": køber.s6||"nej", "6b)": køber.s6b||"nej", "7)": køber.s7||"nej",
+      "8)": køber.s8||"nej", "9)": køber.s9||"nej",
+    };
+
     const sRækker = [
       {nr:"1)", l:"Er motoren udskiftet",                       h:"Hvis ja, med _____________  Kørte km efter udskiftning _______"},
       {nr:"2)", l:"Fortsat fabriksgaranti",                     h:"Hvis ja, angiv udløbsdato og \u2013\u00e5r _______________________"},
@@ -598,21 +606,21 @@ const genSlutseddel = (mc, køber) => {
       txt(r.nr,M,y,8,true,[30,30,30]);
       txt(r.l,M+8,y,8,false,[30,30,30]);
       y+=4;
-      box(M+4,y); txt("Ja",M+9,y,7.5);
-      box(M+19,y); txt("Nej",M+24,y,7.5);
-      box(M+34,y); txt("Ved ikke",M+39,y,7.5);
+      const sv = svar[r.nr];
+      box(M+4, y, sv==="ja");   txt("Ja",M+9,y,7.5);
+      box(M+19, y, sv==="nej"); txt("Nej",M+24,y,7.5);
+      box(M+34, y, sv==="vednot"); txt("Ved ikke",M+39,y,7.5);
       if(r.h==="ANVENDELSE"){
-        // Tidligere anvendelse — checkbokse med hak i Skolekørsel
-        box(col2,y,false); txt("Privat",col2+5,y,7.5);
-        box(col2+24,y,false); txt("Motorsport",col2+29,y,7.5);
-        box(col2+55,y,true); txt("Skolekørsel",col2+60,y,7.5);
+        const anv = køber.s5||"skolekørsel";
+        box(col2,y,anv==="privat"); txt("Privat",col2+5,y,7.5);
+        box(col2+24,y,anv==="motorsport"); txt("Motorsport",col2+29,y,7.5);
+        box(col2+55,y,anv==="skolekørsel"); txt("Skolekørsel",col2+60,y,7.5);
       } else if(r.h&&r.h.endsWith("| Ja/Nej")){
         const label=r.h.replace(" | Ja/Nej","");
         txt(label,col2,y,7.5,false,[50,50,50]);
         box(col2+label.length*1.8+2,y,false); txt("Ja",col2+label.length*1.8+7,y,7.5);
         box(col2+label.length*1.8+16,y,false); txt("Nej",col2+label.length*1.8+21,y,7.5);
       } else if(r.h){
-        // Tekst der kan indeholde □ checkbokse — erstat med inline rendering
         const clean=r.h.replace(/□/g,"").replace(/\s+/g," ").trim();
         const split=doc.splitTextToSize(clean,CW/2-5);
         doc.setFontSize(7.5);doc.setFont("helvetica","normal");doc.setTextColor(50,50,50);
@@ -629,8 +637,8 @@ const genSlutseddel = (mc, køber) => {
     y+=5;
     txt("Motorcyklen er prøvekørt af køber",M,y,8);
     y+=4;
-    box(M,y); txt("Ja",M+5,y,8);
-    box(M+16,y); txt("Nej",M+21,y,8);
+    box(M,y,køber.proevekørt==="ja"); txt("Ja",M+5,y,8);
+    box(M+16,y,køber.proevekørt==="nej"); txt("Nej",M+21,y,8);
     y+=10;
 
     // ── OMREGISTRERING ──
@@ -676,10 +684,14 @@ const genSlutseddel = (mc, køber) => {
     doc.setFontSize(8);doc.setFont("helvetica","normal");doc.setTextColor(50,50,50);
     doc.text(ftxts,M,y);
     y+=ftxts.length*3.5+2;
-    box(M,y,false); txt("Ansvar",M+5,y,8);
-    box(M+20,y,false); txt("Kasko",M+25,y,8);
-    txt("Tegnet i",col2,y-6,7.5,false,[80,80,80]); uLine(col2+18,y-5,35);
-    txt("Under policenr.",col2,y,7.5,false,[80,80,80]); uLine(col2+30,y+1,25);
+    box(M,y,!!køber.forsForsikrAnsvar); txt("Ansvar",M+5,y,8);
+    box(M+20,y,!!køber.forsForsikrKasko); txt("Kasko",M+25,y,8);
+    txt("Tegnet i",col2,y-6,7.5,false,[80,80,80]);
+    if(køber.forsTegnetI) txt(String(køber.forsTegnetI),col2+18,y-6,8,false,[20,20,20]);
+    uLine(col2+18,y-5,35);
+    txt("Under policenr.",col2,y,7.5,false,[80,80,80]);
+    if(køber.forsPolicenr) txt(String(køber.forsPolicenr),col2+30,y,8,false,[20,20,20]);
+    uLine(col2+30,y+1,25);
     y+=10;
 
     ln(M,y,W-M,y); y+=4;
@@ -2037,7 +2049,14 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
   const [kmInlineEdit, setKmInlineEdit] = React.useState(false);
   const [kmInlineVal, setKmInlineVal] = React.useState("");
   const [slutseddelModal, setSlutseddelModal] = React.useState(false);
-  const [køberForm, setKøberForm] = React.useState({navn:"",adresse:"",postby:"",telefon:"",pris:"",km:""});
+  const [køberForm, setKøberForm] = React.useState({
+    navn:"", adresse:"", postby:"", telefon:"", email:"", pris:"", km:"",
+    s1:"nej", s2:"nej", s3:"nej", s4:"nej", s5:"skolekørsel",
+    s6:"nej", s6b:"nej", s7:"nej", s8:"ja", s9:"nej",
+    proevekørt:"ja",
+    forsForsikrAnsvar:true, forsForsikrKasko:false,
+    forsPolicenr:"", forsTegnetI:"Lokal forsikring",
+  });
 
   // Lazy load foto — hentes kun når MC-detalje åbnes
   React.useEffect(() => {
@@ -2460,13 +2479,14 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
           </div>
 
           {/* Køber formular */}
-          <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
+          <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:16}}>
             <div style={{fontWeight:600,fontSize:13,color:"#ccc",marginBottom:4}}>Købers oplysninger:</div>
             {[
               {key:"navn",label:"Navn *",placeholder:"Fulde navn"},
               {key:"adresse",label:"Adresse *",placeholder:"Vejnavn og husnr."},
               {key:"postby",label:"Postnr./by *",placeholder:"f.eks. 6000 Kolding"},
               {key:"telefon",label:"Telefon",placeholder:""},
+              {key:"email",label:"Email",placeholder:"f.eks. navn@mail.dk"},
               {key:"km",label:"Kørte km (bekræft eller ret)",placeholder:"f.eks. 12500",type:"number"},
               {key:"pris",label:"Købesum kr. *",placeholder:"f.eks. 45000",type:"number"},
             ].map(f=>(
@@ -2479,7 +2499,99 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
             ))}
           </div>
 
-          <div style={{display:"flex",gap:10}}>
+          {/* Sælger oplyser */}
+          {(()=>{
+            const jnv = (key) => (
+              <div style={{display:"flex",gap:4,marginTop:4}}>
+                {[["ja","Ja"],["nej","Nej"],["vednot","Ved ikke"]].map(([v,l])=>(
+                  <button key={v} onClick={()=>setKøberForm(p=>({...p,[key]:v}))}
+                    style={{flex:1,padding:"4px 0",fontSize:11,fontWeight:600,borderRadius:5,border:"1px solid #444",cursor:"pointer",
+                      background:køberForm[key]===v?"#cc0000":"#2a2a2a",
+                      color:køberForm[key]===v?"#fff":"#aaa"}}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            );
+            const sektionHdr = (t) => (
+              <div style={{background:"#2a2a2a",borderRadius:6,padding:"7px 10px",fontWeight:700,fontSize:12,color:"#ddd",marginTop:14,marginBottom:6}}>{t}</div>
+            );
+            const spg = (nr, tekst, key, extra) => (
+              <div key={key} style={{marginBottom:8}}>
+                <div style={{fontSize:11,color:"#bbb"}}><span style={{color:"#888",marginRight:4}}>{nr}</span>{tekst}</div>
+                {extra || jnv(key)}
+              </div>
+            );
+            return (
+              <>
+                {sektionHdr("Sælger oplyser")}
+                {spg("1)","Er motoren udskiftet?","s1")}
+                {spg("2)","Fortsat fabriksgaranti?","s2")}
+                {spg("3)","Dok. for serviceeftersyn hos aut. forhandler?","s3")}
+                {spg("4)","Dok. for regelmæssig eftersyn på værksted?","s4")}
+                <div style={{marginBottom:8}}>
+                  <div style={{fontSize:11,color:"#bbb",marginBottom:4}}><span style={{color:"#888",marginRight:4}}>5)</span>Tidligere anvendelse</div>
+                  <div style={{display:"flex",gap:4}}>
+                    {[["privat","Privat"],["motorsport","Motorsport"],["skolekørsel","Skolekørsel"]].map(([v,l])=>(
+                      <button key={v} onClick={()=>setKøberForm(p=>({...p,s5:v}))}
+                        style={{flex:1,padding:"4px 0",fontSize:11,fontWeight:600,borderRadius:5,border:"1px solid #444",cursor:"pointer",
+                          background:køberForm.s5===v?"#cc0000":"#2a2a2a",
+                          color:køberForm.s5===v?"#fff":"#aaa"}}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {spg("6)","Har motorcyklen været skadet?","s6")}
+                {spg("6b)","Større reparationer?","s6b")}
+                {spg("7)","Er motorcyklen helt/delvis omlakeret?","s7")}
+                {spg("8)","Har motorcyklen kørt om vinteren?","s8")}
+                {spg("9)","Dok. for vinteropbevaring hos forhandler?","s9")}
+
+                {sektionHdr("Prøvekørsel")}
+                <div style={{marginBottom:8}}>
+                  <div style={{fontSize:11,color:"#bbb",marginBottom:4}}>Motorcyklen er prøvekørt af køber</div>
+                  <div style={{display:"flex",gap:4}}>
+                    {[["ja","Ja"],["nej","Nej"]].map(([v,l])=>(
+                      <button key={v} onClick={()=>setKøberForm(p=>({...p,proevekørt:v}))}
+                        style={{flex:1,padding:"4px 0",fontSize:11,fontWeight:600,borderRadius:5,border:"1px solid #444",cursor:"pointer",
+                          background:køberForm.proevekørt===v?"#cc0000":"#2a2a2a",
+                          color:køberForm.proevekørt===v?"#fff":"#aaa"}}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {sektionHdr("Forsikring")}
+                <div style={{display:"flex",gap:8,marginBottom:8}}>
+                  {[["forsForsikrAnsvar","Ansvar"],["forsForsikrKasko","Kasko"]].map(([key,l])=>(
+                    <button key={key} onClick={()=>setKøberForm(p=>({...p,[key]:!p[key]}))}
+                      style={{flex:1,padding:"5px 0",fontSize:11,fontWeight:600,borderRadius:5,border:"1px solid #444",cursor:"pointer",
+                        background:køberForm[key]?"#cc0000":"#2a2a2a",
+                        color:køberForm[key]?"#fff":"#aaa"}}>
+                      {l}
+                    </button>
+                  ))}
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:8}}>
+                  {[
+                    {key:"forsTegnetI",label:"Tegnet i",placeholder:"f.eks. Lokal forsikring"},
+                    {key:"forsPolicenr",label:"Under policenr.",placeholder:"Policenummer"},
+                  ].map(f=>(
+                    <div key={f.key}>
+                      <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,textTransform:"uppercase",letterSpacing:.5}}>{f.label}</label>
+                      <input value={køberForm[f.key]} placeholder={f.placeholder}
+                        onChange={e=>setKøberForm(p=>({...p,[f.key]:e.target.value}))}
+                        style={{...inp,width:"100%",boxSizing:"border-box"}}/>
+                    </div>
+                  ))}
+                </div>
+              </>
+            );
+          })()}
+
+          <div style={{display:"flex",gap:10,marginTop:16}}>
             <button onClick={()=>{
               if(!køberForm.navn||!køberForm.adresse||!køberForm.postby||!køberForm.pris){
                 alert("Udfyld venligst navn, adresse, postnr./by og købesum");

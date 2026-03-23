@@ -8,3 +8,6 @@ mcfleet/build/
 .env
 .env.local
 .env.*.local
+
+# Lokal sammenligning af zip-version (ikke i repo)
+_compare_v100b/

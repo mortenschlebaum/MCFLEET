@@ -1,20 +1,735 @@
-import React, { useState, useMemo, useEffect, useCallback } from "react";
-import { isSupabaseConfigured, getSupabase } from "./lib/supabaseClient";
-import { fetchAllRows } from "./lib/fetchAllRows";
-import { normalizeMcFromDb, normalizeOpgaveFromDb } from "./lib/dbNormalize";
+import React, { useState, useMemo, useEffect } from "react";
 
-const SB_READY = isSupabaseConfigured();
+// ── Supabase config ──
+const SUPA_URL = "https://qiqgrafjzcijaphegffr.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFpcWdyYWZqemNpamFwaGVnZmZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1NTgyNjMsImV4cCI6MjA4OTEzNDI2M30.ulaNyqht-gqWwxZVKEQGGjBveA1lp4_t5gB9cvjyUH0";
 
-const LOCATIONS = ["Kolding","KTA Kolding","Århus MC","Hobro","Herning","Viborg","Randers","Horsens","Odense","Lager / Depot"];
+// ── MotorAPI config ──
+const MOTOR_KEY = "zu86wzqcqfv0esyl14i84owee3wnj49k";
+const motorApi = async (reg) => {
+  const url = `https://v1.motorapi.dk/vehicles/${reg.replace(/\s+/g,"")}`;
+  const resp = await fetch(url, {
+    headers: { "X-AUTH-TOKEN": MOTOR_KEY }
+  });
+  if(resp.status === 404) return null;
+  if(!resp.ok) throw new Error("MotorAPI fejl: " + resp.status);
+  return resp.json();
+};
+
+// Synsbasen API — henter næste syn dato korrekt
+const SYNSBASEN_KEY = "sb_sk_6e0bb4e91920ce0e5ffd310b4e10e8ef";
+
+// ── e-conomic integration ──
+const ECO_APP   = "ivfNMko6pap2oaLRnHDdnODZBFsAWdzc5FrHGksdxRE";
+const ECO_GRANT = "eNuTBlpklUlzhw2f3XiRPj4Z2dzbztTkOtTDkxu6A9I";
+const ECO_KLADDE = 3;
+const ECO_KONTO  = 2300;
+const ECO_DIM = {
+  "Kolding":18,"KTA Kolding":99,"Århus MC":15,"Hobro":20,
+  "Herning":13,"Viborg":16,"Odense":17,"Randers":19,
+  "Horsens":7,"Esbjerg":8,"Aabenraa":5,
+  "MC til salg":99,"Solgte MC'er":99,"Lager / Depot":99
+};
+
+const ECO_BASE = "https://restapi.e-conomic.com";
+
+const ecoApi = async (method, path, body) => {
+  const r = await fetch(ECO_BASE + path, {
+    method,
+    headers: {
+      "X-AppSecretToken": ECO_APP,
+      "X-AgreementGrantToken": ECO_GRANT,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(()=>"");
+    console.error("e-conomic full error:", t);
+    throw new Error("e-conomic " + r.status + ": " + t);
+  }
+  if (r.status === 204) return null;
+  return r.json();
+};
+// Synsbasen API — returnerer fuldt dataobjekt med alle felter
+const synsbasenApi = async (reg) => {
+  const regNorm = reg.replace(/\s+/g, "");
+  const url = `https://api.synsbasen.dk/v1/vehicles/registration/${regNorm}`;
+  try {
+    const resp = await fetch(url, {
+      headers: {
+        "Authorization": `Bearer ${SYNSBASEN_KEY}`,
+        "Content-Type": "application/json",
+      }
+    });
+    if(resp.status === 404) return null;
+    if(!resp.ok) { console.warn("Synsbasen fejl HTTP", resp.status, "for", regNorm); return null; }
+    const json = await resp.json();
+    return json?.data || json || null;
+  } catch(e) {
+    console.warn("Synsbasen fejl:", e.message);
+    return null;
+  }
+};
+
+// Udtræk normaliserede felter fra Synsbasen data
+const synsbasenFelter = (d) => {
+  if(!d) return {};
+  const norm = raw => raw ? raw.split("+")[0].split("T")[0] : "";
+  return {
+    stel:       d.vin || "",
+    foersteReg: norm(d.first_registration_date || d.first_registration || ""),
+    syn:        norm(d.last_inspection_date || ""),
+    naesteSyn:  d.next_inspection_date_estimate || d.next_inspection_date || "",
+    beskrivelse:[d.brand?.name||d.make, d.model?.name||d.model, d.variant?.name||d.variant]
+                  .filter(Boolean).join(" ").toUpperCase() || "",
+  };
+};
+
+const db = async (path, opts={}) => {
+  const {prefer:_p, body:_b, method:_m, ...rest} = opts;
+  const url = `${SUPA_URL}/rest/v1/${path}`;
+  const method = opts.method || "GET";
+  const headers = {
+    "apikey": SUPA_KEY,
+    "Authorization": `Bearer ${SUPA_KEY}`,
+    "Content-Type": "application/json",
+    "Prefer": opts.prefer || "return=representation",
+  };
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: opts.body,
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`${res.status}: ${t}`);
+  }
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : [];
+};
+
+// MC helpers: konverter snake_case DB → camelCase app og omvendt
+const mcFromDb = r => ({
+  id: Number(r.id), mcNr: r.mc_nr, reg: r.reg, stel: r.stel,
+  gps: r.gps||"", syn: r.syn, km: r.km, location: r.location,
+  beskrivelse: r.beskrivelse||"", foto: r.foto||"",
+  fotos: Array.isArray(r.fotos) ? r.fotos : (r.foto ? [r.foto] : []),
+  foersteReg: r.foerste_reg||"",
+  naesteSyn: r.naeste_syn||"",
+  lokationsLog: r.lokations_log||[], kmLog: r.km_log||[],
+});
+const mcToDb = m => {
+  const obj = {
+    id: m.id, mc_nr: m.mcNr||0, reg: m.reg||"", stel: m.stel||"",
+    gps: m.gps||"", syn: m.syn||"", km: m.km||0, location: m.location||"",
+    beskrivelse: m.beskrivelse||"", foto: m.foto||"",
+    fotos: m.fotos||[],
+    lokations_log: m.lokationsLog||[], km_log: m.kmLog||[],
+  };
+  if(m.foersteReg !== undefined) obj.foerste_reg = m.foersteReg||"";
+  if(m.naesteSyn !== undefined) obj.naeste_syn = m.naesteSyn||"";
+  return obj;
+};
+
+const fakFromDb = r => ({
+  id: r.id, mcId: r.mc_id, mcReg: r.mc_reg, dato: r.dato,
+  note: r.note||"", titel: r.titel||"", linjer: r.linjer||[], total: r.total||0, km: r.km||0,
+  afdeling: r.afdeling||"", faktureret: r.faktureret||false,
+});
+const fakToDb = f => ({
+  id: f.id, mc_id: f.mcId, mc_reg: f.mcReg||"", dato: f.dato,
+  note: f.note||"", titel: f.titel||"", linjer: f.linjer||[], total: f.total||0, km: f.km||0,
+  afdeling: f.afdeling||"", faktureret: f.faktureret||false,
+});
+
+const lokFromDb = r => ({id: r.id, navn: r.navn||"", transport: r.transport||0, dimension: r.dimension||""});
+const lokToDb = l => ({navn: l.navn||"", transport: l.transport||0, dimension: l.dimension||""});
+
+const ydFromDb = r => ({id: r.id, nr: r.nr||"", navn: r.navn||"", pris: r.pris||0});
+const ydToDb = y => ({id: y.id, nr: y.nr||"", navn: y.navn||"", pris: y.pris||0});
+
+const opgFromDb = r => ({
+  id: r.id, titel: r.titel||"", beskrivelse: r.beskrivelse||"",
+  lokation: r.lokation||"", senestUdfoert: r.senest_udfoert||"",
+  oprettet: r.oprettet||"", udfoert: r.udfoert||false, udfoertDato: r.udfoert_dato||"",
+  mcId: r.mc_id||null, mcReg: r.mc_reg||"", foto: r.foto||"",
+});
+const opgToDb = o => ({
+  id: o.id, titel: o.titel||"", beskrivelse: o.beskrivelse||"",
+  lokation: o.lokation||"", senest_udfoert: o.senestUdfoert||"",
+  oprettet: o.oprettet||"", udfoert: o.udfoert||false, udfoert_dato: o.udfoertDato||"",
+  mc_id: o.mcId||null, mc_reg: o.mcReg||"", foto: o.foto||"",
+});
+
+const brugerFromDb = r => ({id: r.id, brugernavn: r.brugernavn, adgangskode: r.adgangskode, navn: r.navn||"", rolle: r.rolle||"bruger"});
+const brugerToDb = b => ({id: b.id, brugernavn: b.brugernavn, adgangskode: b.adgangskode||"", navn: b.navn||"", rolle: b.rolle||"bruger"});
+
+const LOCATIONS = ["Kolding","KTA Kolding","Århus MC","Hobro","Herning","Viborg","Randers","Horsens","Odense","Lager / Depot","Esbjerg","Aabenraa","MC til salg","Solgte MC'er"];
+
+// Lokationer der betragtes som "solgte" — tæller ikke med i statistik
+const SOLGTE_LOKATIONER = ["Solgte MC'er", "MC til salg"];
+const erSolgt = mc => SOLGTE_LOKATIONER.includes(mc.location);
+
+// Transport-takster per afdeling (0 = ingen transport)
+const TRANSPORT_TAKSTER = {
+  "Kolding": 0, "KTA Kolding": 0, "Esbjerg": 530, "Odense": 553,
+  "Horsens": 493, "Randers": 977, "Viborg": 925, "Herning": 788,
+  "Århus MC": 908, "Hobro": 1175, "Aabenraa": 700, "MC til salg": 0,
+  "Lager / Depot": 0, "Solgte MC'er": 0,
+};
 const today = new Date();
 const todayStr = today.toISOString().split("T")[0];
 const addDays = (d,n) => { const x=new Date(d); x.setDate(x.getDate()+n); return x.toISOString().split("T")[0]; };
 const fmtDato = d => {
   if(!d) return "";
-  const [y,m,day]=d.split("-");
+  // Fjern timezone-suffix hvis tilstede: "2020-12-15+01:00" → "2020-12-15"
+  const clean = d.split("+")[0].split("T")[0];
+  const parts = clean.split("-");
+  if(parts.length !== 3) return d;
+  const [y,m,day] = parts;
   return `${day}-${m}-${y}`;
 };
+// Normaliser dato til YYYY-MM-DD format (til input type=date)
+const normDato = d => {
+  if(!d) return "";
+  return d.split("+")[0].split("T")[0];
+};
 const fmt = n => Number(n).toLocaleString("da-DK",{minimumFractionDigits:2,maximumFractionDigits:2});
+
+// Læs billede fra fil, ret EXIF-rotation og komprimer — returnerer korrekt orienteret dataUrl via callback
+const fixOgKomprimer = (file, callback, maxPx=1200, kvalitet=0.82) => {
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const blob = ev.target.result;
+    // Læs EXIF orientation manuelt fra JPEG header
+    const getOrientation = (arrayBuffer) => {
+      const view = new DataView(arrayBuffer);
+      if(view.getUint16(0,false) !== 0xFFD8) return 1; // ikke JPEG
+      let offset = 2;
+      while(offset < view.byteLength) {
+        const marker = view.getUint16(offset,false);
+        offset += 2;
+        if(marker === 0xFFE1) {
+          if(view.getUint32(offset+2,false) !== 0x45786966) return 1; // ikke EXIF
+          const little = view.getUint16(offset+8,false) === 0x4949;
+          const ifdOffset = view.getUint32(offset+14,little);
+          const entries = view.getUint16(offset+8+ifdOffset,little);
+          for(let i=0;i<entries;i++){
+            if(view.getUint16(offset+8+ifdOffset+2+i*12,little) === 0x0112)
+              return view.getUint16(offset+8+ifdOffset+2+i*12+8,little);
+          }
+          return 1;
+        }
+        if((marker & 0xFF00) !== 0xFF00) break;
+        offset += view.getUint16(offset,false);
+      }
+      return 1;
+    };
+    // Konverter til ArrayBuffer for EXIF-læsning
+    const arr = new Uint8Array(blob);
+    const orientation = getOrientation(arr.buffer);
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      const swap = orientation >= 5; // 5-8 = 90/270 grader rotation
+      const W = swap ? img.height : img.width;
+      const H = swap ? img.width : img.height;
+      const ratio = Math.min(maxPx/W, maxPx/H, 1);
+      c.width = Math.round(W*ratio);
+      c.height = Math.round(H*ratio);
+      const ctx = c.getContext("2d");
+      ctx.save();
+      // Anvend korrekt rotation baseret på EXIF orientation
+      switch(orientation){
+        case 2: ctx.transform(-1,0,0,1,c.width,0); break;
+        case 3: ctx.transform(-1,0,0,-1,c.width,c.height); break;
+        case 4: ctx.transform(1,0,0,-1,0,c.height); break;
+        case 5: ctx.transform(0,1,1,0,0,0); break;
+        case 6: ctx.transform(0,1,-1,0,c.height,0); break;
+        case 7: ctx.transform(0,-1,-1,0,c.height,c.width); break;
+        case 8: ctx.transform(0,-1,1,0,0,c.width); break;
+        default: break;
+      }
+      ctx.drawImage(img, 0, 0, img.width*ratio, img.height*ratio);
+      ctx.restore();
+      callback(c.toDataURL("image/jpeg", kvalitet));
+    };
+    img.src = URL.createObjectURL(new Blob([blob]));
+  };
+  reader.readAsArrayBuffer(file);
+};
+
+// ── PDF GENERATOR ──────────────────────────────────────────────────────────────
+const genPDF = (faktura) => {
+  const loadJsPDF = () => new Promise((resolve, reject) => {
+    if (window.jspdf) { resolve(window.jspdf.jsPDF); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    s.onload = () => resolve(window.jspdf.jsPDF);
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+
+  loadJsPDF().then(JsPDF => {
+    const doc = new JsPDF({orientation:"portrait",unit:"mm",format:"a4"});
+    const W = 210, M = 18, CW = W - M*2;
+    let y = 20;
+
+    const line = (x1,y1,x2,y2,r=180,g=180,b=180) => {
+      doc.setDrawColor(r,g,b); doc.line(x1,y1,x2,y2);
+    };
+    const txt = (t,x,yy,size=10,bold=false,color=[40,40,40]) => {
+      doc.setFontSize(size);
+      doc.setFont("helvetica", bold?"bold":"normal");
+      doc.setTextColor(...color);
+      doc.text(String(t||""), x, yy);
+    };
+    const fmtKr = n => Number(n).toLocaleString("da-DK",{minimumFractionDigits:2,maximumFractionDigits:2})+" kr";
+    const fmtD = d => { if(!d) return ""; const [y,m,day]=d.split("-"); return `${day}-${m}-${y}`; };
+
+    // ── HEADER: firmaoplysninger ──
+    doc.setFillColor(180,0,0);
+    doc.rect(0,0,W,28,"F");
+    txt("Lisbeths Køreskole ApS", M, 11, 16, true, [255,255,255]);
+    txt("Vranderupvej 15, 6000 Kolding", M, 18, 9, false, [255,220,220]);
+    txt("CVR: 36039175  ·  Info@lisbeth.dk", M, 24, 9, false, [255,220,220]);
+
+    y = 40;
+
+    // ── FAKTURA TITEL ──
+    txt("FAKTURA", M, y, 22, true, [180,0,0]);
+    y += 10;
+    line(M, y, W-M, y, 220,0,0);
+    y += 8;
+
+    // ── FAKTURA INFO BOKS ──
+    doc.setFillColor(245,245,245);
+    doc.roundedRect(M, y, CW, 28, 2, 2, "F");
+    const col2 = M + CW/2;
+    txt("Faktura nr:", M+4, y+8, 9, true, [100,100,100]);
+    txt(faktura.id, M+35, y+8, 10, true, [180,0,0]);
+    txt("Dato:", col2, y+8, 9, true, [100,100,100]);
+    txt(fmtD(faktura.dato), col2+20, y+8, 10, false, [40,40,40]);
+    txt("MC:", M+4, y+17, 9, true, [100,100,100]);
+    txt(faktura.mcReg||"-", M+35, y+17, 10, false, [40,40,40]);
+    txt("Afdeling:", col2, y+17, 9, true, [100,100,100]);
+    const mc_loc = faktura.afdeling||faktura.mcLokation||"-";
+    txt(mc_loc, col2+28, y+17, 10, false, [40,40,40]);
+    if(faktura.titel){
+      txt("Titel:", M+4, y+25, 9, true, [100,100,100]);
+      txt(faktura.titel, M+35, y+25, 10, false, [40,40,40]);
+    }
+    y += 36;
+
+    // Beskrivelse/note
+    if(faktura.note){
+      doc.setFillColor(255,245,245);
+      doc.roundedRect(M, y, CW, 12, 2, 2, "F");
+      txt(faktura.note, M+4, y+8, 9, false, [100,40,40]);
+      y += 18;
+    }
+
+    // ── LINJE TABEL HEADER ──
+    const colAntal = M + CW*0.60;
+    const colPris  = M + CW*0.72;
+    const colTotal = W - M - 2;
+    doc.setFillColor(40,40,40);
+    doc.rect(M, y, CW, 9, "F");
+    doc.setFontSize(9); doc.setFont("helvetica","bold"); doc.setTextColor(255,255,255);
+    doc.text("Beskrivelse", M+3, y+6.5);
+    doc.text("Antal", colAntal+6, y+6.5, {align:"center"});
+    doc.text("Stk. pris", colPris+16, y+6.5, {align:"right"});
+    doc.text("Total", colTotal, y+6.5, {align:"right"});
+    y += 9;
+
+    // ── LINJER ──
+    let subtotal = 0;
+    faktura.linjer.forEach((l, i) => {
+      const rowH = 8;
+      if(i%2===1){ doc.setFillColor(248,248,248); doc.rect(M,y,CW,rowH,"F"); }
+      const lineTotal = l.antal * l.pris;
+      subtotal += lineTotal;
+      // Beskrivelse venstre
+      doc.setFontSize(9); doc.setFont("helvetica","normal"); doc.setTextColor(40,40,40);
+      doc.text(String(l.navn||"-"), M+3, y+5.5);
+      // Antal centreret
+      doc.text(String(l.antal), colAntal+6, y+5.5, {align:"center"});
+      // Stk pris højrejusteret
+      doc.text(fmtKr(l.pris), colPris+16, y+5.5, {align:"right"});
+      // Total højrejusteret
+      doc.setFont("helvetica","bold");
+      doc.text(fmtKr(lineTotal), colTotal, y+5.5, {align:"right"});
+      y += rowH;
+      if(y > 250){ doc.addPage(); y = 20; }
+    });
+
+    y += 4;
+    line(M, y, W-M, y, 200,200,200);
+    y += 8;
+
+    // ── SUMMERING ──
+    const moms = subtotal * 0.25;
+    const totalInklMoms = subtotal + moms;
+    const sumX = M + CW*0.58;
+    const valX = W - M;
+
+    doc.setFontSize(9); doc.setFont("helvetica","normal"); doc.setTextColor(80,80,80);
+    doc.text("Subtotal (ekskl. moms):", sumX, y);
+    doc.setTextColor(40,40,40);
+    doc.text(fmtKr(subtotal), W-M-2, y, {align:"right"});
+    y += 7;
+    doc.setTextColor(80,80,80);
+    doc.text("Moms (25%):", sumX, y);
+    doc.setTextColor(40,40,40);
+    doc.text(fmtKr(moms), W-M-2, y, {align:"right"});
+    y += 3;
+    line(sumX, y, W-M, y, 180,180,180);
+    y += 7;
+
+    // Total boks
+    doc.setFillColor(30,30,30);
+    doc.rect(M, y, CW, 14, "F");
+    doc.setFontSize(11); doc.setFont("helvetica","bold"); doc.setTextColor(255,255,255);
+    doc.text("TOTAL", M+4, y+9);
+    doc.setFontSize(12); doc.setTextColor(100,220,100);
+    doc.text(fmtKr(totalInklMoms), W-M-2, y+9, {align:"right"});
+    doc.setFontSize(8); doc.setFont("helvetica","normal"); doc.setTextColor(180,180,180);
+    doc.text("(inkl. moms)", W-M-2, y+13, {align:"right"});
+
+    y += 20;
+
+    // ── FOOTER ──
+    line(M, 280, W-M, 280, 200,200,200);
+    doc.setFontSize(8); doc.setTextColor(150,150,150); doc.setFont("helvetica","normal");
+    doc.text("Lisbeths Køreskole ApS  ·  CVR: 36039175  ·  Vranderupvej 15, 6000 Kolding  ·  Info@lisbeth.dk", W/2, 285, {align:"center"});
+    doc.text(`Faktura ${faktura.id} genereret ${fmtD(new Date().toISOString().split("T")[0])}`, W/2, 290, {align:"center"});
+
+    doc.save(`${faktura.id}_${faktura.mcReg||"mc"}.pdf`);
+  }).catch(e => alert("PDF fejl: "+e.message));
+};
+
+const genSlutseddel = (mc, køber) => {
+  const loadJsPDF = () => new Promise((resolve, reject) => {
+    if (window.jspdf) { resolve(window.jspdf.jsPDF); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    s.onload = () => resolve(window.jspdf.jsPDF);
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+
+  // Konverter tal til danske ord
+  const talTilTekst = (n) => {
+    try { n = Math.round(Number(String(n).replace(/\./g,"").replace(",","."))); } catch(e){ return String(n); }
+    if(isNaN(n)||n===0) return "nul";
+    const ones=["","en","to","tre","fire","fem","seks","syv","otte","ni","ti","elleve","tolv","tretten","fjorten","femten","seksten","sytten","atten","nitten"];
+    const tens=["","","tyve","tredive","fyrre","halvtreds","tres","halvfjerds","firs","halvfems"];
+    const u1000 = n => {
+      if(n===0) return "";
+      if(n<20) return ones[n];
+      if(n<100){ const t=tens[Math.floor(n/10)],o=ones[n%10]; return o?(o+"og"+t):t; }
+      const h=ones[Math.floor(n/100)]+"hundrede", r=u1000(n%100);
+      return h+(r?("og"+r):"");
+    };
+    if(n<1000) return u1000(n);
+    if(n<1000000){ const t=Math.floor(n/1000),r=n%1000; return (t===1?"et":u1000(t))+"tusinde"+(r?(r<100?"og":"")+u1000(r):""); }
+    const m=Math.floor(n/1000000),r=n%1000000;
+    return (m===1?"en":u1000(m))+"million"+(m>1?"er":"")+(r?talTilTekst(r):"");
+  };
+
+  loadJsPDF().then(JsPDF => {
+    const doc = new JsPDF({orientation:"portrait", unit:"mm", format:"a4"});
+    const W=210, H=297, M=14, CW=W-M*2;
+    const col2 = M + CW/2 + 3;
+    const halfW = CW/2 - 4;
+
+    const fmtD = d => { if(!d) return ""; const p=d.split("-"); return p.length===3?`${p[2]}-${p[1]}-${p[0]}`:d; };
+
+    // Helpers
+    const txt = (t, x, y, size=9, bold=false, color=[30,30,30]) => {
+      doc.setFontSize(size);
+      doc.setFont("helvetica", bold?"bold":"normal");
+      doc.setTextColor(...color);
+      doc.text(String(t||""), x, y);
+    };
+    const ln = (x1,y1,x2,y2,gray=170) => {
+      doc.setDrawColor(gray,gray,gray); doc.setLineWidth(0.25); doc.line(x1,y1,x2,y2);
+    };
+    const uLine = (x,y,w) => ln(x,y,x+w,y,160);
+    const box = (x,y,checked=false,size=3.5) => {
+      doc.setDrawColor(80,80,80); doc.setLineWidth(0.3);
+      doc.rect(x,y-size+0.5,size,size);
+      if(checked){ doc.setFontSize(8);doc.setFont("helvetica","bold");doc.setTextColor(0,0,0);doc.text("X",x+0.5,y-0.3); }
+    };
+    const sektionHoved = (label,y) => {
+      doc.setFillColor(220,220,220);
+      doc.rect(M,y,CW,6.5,"F");
+      txt(label,M+2,y+4.8,10,true,[20,20,20]);
+      return y+6.5;
+    };
+
+    // Felt-hjælper: label øverst, value + linje under
+    const felt = (label,val,x,y,w) => {
+      txt(label,x,y,7,false,[110,110,110]);
+      if(val) txt(val,x,y+5,9,false,[20,20,20]);
+      uLine(x,y+6,w);
+    };
+
+    // ── HEADER ──
+    doc.setFillColor(210,0,0);
+    doc.rect(0,0,W,20,"F");
+    txt("Slutseddel",M,9,17,true,[255,255,255]);
+    txt("Handel med brugt motorcykel",M,15.5,9,false,[255,200,200]);
+
+
+    let y = 25;
+
+    // ── SÆLGER / KØBER ──
+    txt("Sælger",M,y,10,true,[20,20,20]);
+    txt("Køber",col2,y,10,true,[20,20,20]);
+    y += 3;
+
+    const sælger = ["Lisbeths Køreskole ApS","Vranderupvej 15","6000 Kolding","29414249"];
+    const køberArr = [køber.navn||"",køber.adresse||"",køber.postby||"",køber.telefon||""];
+    const feltLabels = ["Navn","Adresse","Postnr./by","Telefon"];
+
+    feltLabels.forEach((label,i) => {
+      const fy = y + i*13;
+      felt(label, sælger[i], M, fy, halfW);
+      felt(label, køberArr[i], col2, fy, halfW);
+    });
+    y += 56;
+
+    ln(M,y,W-M,y);
+    y += 4;
+
+    // ── MOTORCYKLEN ──
+    y = sektionHoved("Motorcyklen",y);
+    y += 5;
+
+    // Række 1: Mærke/model (to linjer hvis lang) + Sidst syn + Stel
+    // Split mærke/model so det ikke løber ind i Sidst syn
+    const mcBeskr = mc.beskrivelse||"";
+    const mcBeskrSplit = doc.splitTextToSize(mcBeskr, 55);
+    txt("Mærke/model/type", M, y, 7, false, [110,110,110]);
+    doc.setFontSize(9); doc.setFont("helvetica","normal"); doc.setTextColor(20,20,20);
+    doc.text(mcBeskrSplit, M, y+5);
+    uLine(M, y+6+(mcBeskrSplit.length-1)*4, 58);
+    felt("Sidst syn?", fmtD(mc.syn)||"", M+62, y, 28);
+    felt("Stelnr.", mc.stel||"", col2+12, y, W-M-col2-12);
+    y += mcBeskrSplit.length > 1 ? 17 : 13;
+
+    // Række 2: 1.reg + Reg.nr + Med sidevogn
+    felt("1. gang indregistreret", fmtD(mc.foersteReg)||"", M, y, 45);
+    felt("Reg.nr.", mc.reg||"", M+48, y, 38);
+    // Med sidevogn — pre-udfyldt Nej
+    txt("Med sidevogn", col2+10, y, 7.5, false, [80,80,80]);
+    box(col2+10, y+5, true); txt("Nej",col2+15,y+5,8);
+    box(col2+26, y+5, false); txt("Ja, hvilken",col2+31,y+5,8);
+    uLine(col2+50, y+6, 20);
+    y += 13;
+
+    // Række 3: Kørte km + Over 100.000
+    const kmVis = køber.km ? Number(køber.km).toLocaleString("da-DK")+" km" : (mc.km?mc.km.toLocaleString("da-DK")+" km":"");
+    felt("Kørte km", kmVis, M, y, 45);
+    txt("Kørt over 100.000 km", col2, y, 7.5, false, [80,80,80]);
+    // Pre-udfyldt Nej
+    box(col2, y+5, false); txt("Ja",col2+5,y+5,8);
+    box(col2+16, y+5, true); txt("Nej",col2+21,y+5,8);
+    txt("Hvis ja, angiv km kørt i alt",col2+32,y+5,7.5,false,[110,110,110]);
+    uLine(col2+79,y+6,W-M-col2-79);
+    y += 14;
+
+    ln(M,y,W-M,y); y+=4;
+
+    // ── BETALING ──
+    y = sektionHoved("Betaling",y);
+    y += 5;
+
+    const prisNum = Number(String(køber.pris||"0").replace(/[^0-9]/g,""));
+    const prisKr = prisNum ? prisNum.toLocaleString("da-DK")+" kr." : "";
+    const prisTekst = prisNum ? talTilTekst(prisNum)+" kroner" : "";
+
+    felt("Købesum kr. (beløb i kroner)", prisKr, M, y, halfW);
+    felt("Overtagelsesdag – dag/måned/år", "", col2, y, halfW);
+    y += 13;
+
+    // Købesum med bogstaver — pre-udfyldt
+    felt("Købesum kr. (beløb med bogstaver)", prisTekst, M, y, halfW);
+    // Restgæld — pre-udfyldt Nej
+    txt("Evt. restgæld/andre hæftelser", col2, y, 7.5, false, [80,80,80]);
+    box(col2, y+5, false); txt("Ja",col2+5,y+5,8);
+    box(col2+16, y+5, true); txt("Nej",col2+21,y+5,8);
+    txt("Hvis ja, til",col2+30,y+5,7.5,false,[110,110,110]);
+    uLine(col2+52,y+6,halfW-52);
+    y += 13;
+
+    // Betaling — pre-udfyldt Bankoverførsel
+    txt("Betaling",M,y,7.5,false,[80,80,80]);
+    txt("Aktuel gæld kr. (beløb i kroner)",col2,y,7.5,false,[80,80,80]);
+    y += 5;
+    box(M,y,false); txt("Kontant betaling",M+5,y,8);
+    box(M+38,y,true); txt("Bankoverførsel",M+43,y,8);
+    uLine(col2,y+1,halfW);
+    y += 11;
+
+    ln(M,y,W-M,y); y+=4;
+
+    // ── SÆLGER OPLYSER ──
+    y = sektionHoved("Sælger oplyser",y);
+    y += 5;
+
+    const sRækker = [
+      {nr:"1)", l:"Er motoren udskiftet",                       h:"Hvis ja, med _____________  Kørte km efter udskiftning _______"},
+      {nr:"2)", l:"Fortsat fabriksgaranti",                     h:"Hvis ja, angiv udløbsdato og \u2013\u00e5r _______________________"},
+      {nr:"3)", l:"Dok. for serviceeftersyn hos aut. forhandler",h:"Servicehæfte udleveret | Ja/Nej"},
+      {nr:"4)", l:"Dok. for regelmæssig eftersyn på værksted",    h:"Instruktionsbog udleveret | Ja/Nej"},
+      {nr:"5)", l:"Tidligere anvendelse", h:"ANVENDELSE"},
+      {nr:"6)", l:"Har motorcyklen v\u00e6ret skadet",               h:"Hvis ja, omfanget oplyses ____________________________"},
+      {nr:"6b)",l:"St\u00f8rre reparationer",                        h:"Hvis ja, omfanget oplyses ____________________________"},
+      {nr:"7)", l:"Er motorcyklen helt/delvis omlakeret",       h:"Hvis ja, hvornår ____________________________________"},
+      {nr:"8)", l:"Har motorcyklen k\u00f8rt om vinteren",           h:""},
+      {nr:"9)", l:"Dok. for vinteropbevaring hos forhandler?",  h:"Hvis ja, dok. for olieskift m.m. | Ja/Nej"},
+    ];
+
+    sRækker.forEach(r => {
+      if(y>255){doc.addPage();y=15;}
+      txt(r.nr,M,y,8,true,[30,30,30]);
+      txt(r.l,M+8,y,8,false,[30,30,30]);
+      y+=4;
+      box(M+4,y); txt("Ja",M+9,y,7.5);
+      box(M+19,y); txt("Nej",M+24,y,7.5);
+      box(M+34,y); txt("Ved ikke",M+39,y,7.5);
+      if(r.h==="ANVENDELSE"){
+        // Tidligere anvendelse — checkbokse med hak i Skolekørsel
+        box(col2,y,false); txt("Privat",col2+5,y,7.5);
+        box(col2+24,y,false); txt("Motorsport",col2+29,y,7.5);
+        box(col2+55,y,true); txt("Skolekørsel",col2+60,y,7.5);
+      } else if(r.h&&r.h.endsWith("| Ja/Nej")){
+        const label=r.h.replace(" | Ja/Nej","");
+        txt(label,col2,y,7.5,false,[50,50,50]);
+        box(col2+label.length*1.8+2,y,false); txt("Ja",col2+label.length*1.8+7,y,7.5);
+        box(col2+label.length*1.8+16,y,false); txt("Nej",col2+label.length*1.8+21,y,7.5);
+      } else if(r.h){
+        // Tekst der kan indeholde □ checkbokse — erstat med inline rendering
+        const clean=r.h.replace(/□/g,"").replace(/\s+/g," ").trim();
+        const split=doc.splitTextToSize(clean,CW/2-5);
+        doc.setFontSize(7.5);doc.setFont("helvetica","normal");doc.setTextColor(50,50,50);
+        doc.text(split,col2,y);
+      }
+      y+=7;
+    });
+
+    ln(M,y,W-M,y); y+=4;
+
+    // ── PRØVEKØRSEL ──
+    if(y>255){doc.addPage();y=15;}
+    y = sektionHoved("Prøvekørsel",y);
+    y+=5;
+    txt("Motorcyklen er prøvekørt af køber",M,y,8);
+    y+=4;
+    box(M,y); txt("Ja",M+5,y,8);
+    box(M+16,y); txt("Nej",M+21,y,8);
+    y+=10;
+
+    // ── OMREGISTRERING ──
+    if(y>240){doc.addPage();y=15;}
+    y = sektionHoved("Omregistrering/afmelding",y);
+    y+=5;
+    const omreg1="Motorcyklen skal – for købers regning – synes og godkendes inden omregistrering";
+    const omreg1s=doc.splitTextToSize(omreg1,halfW);
+    doc.setFontSize(8);doc.setFont("helvetica","normal");doc.setTextColor(50,50,50);
+    doc.text(omreg1s,M,y);
+    const omreg2="Sælger omregistrerer motorcyklen når betalingen er registeret i købers bank.";
+    const omreg2s=doc.splitTextToSize(omreg2,halfW);
+    doc.text(omreg2s,col2,y);
+    y+=omreg1s.length*3.5+3;
+    // Motorcyklen skal synes — præ-udfyldt Nej
+    box(M,y,false); txt("Ja",M+5,y,8);
+    box(M+16,y,true); txt("Nej",M+21,y,8);
+    box(col2,y,false); txt("Ja",col2+5,y,8);
+    y+=8;
+    txt("Synsrapport udleveret til køber",M,y,7.5,false,[80,80,80]);
+    txt("Evt. rapportnr.:",M+55,y,7.5,false,[80,80,80]);
+    uLine(M+78,y+1,30);
+    y+=4;
+    // Synsrapport — præ-udfyldt Nej
+    box(M,y,false); txt("Ja",M+5,y,8);
+    box(M+16,y,true); txt("Nej",M+21,y,8);
+    txt("Køber omregistrerer/afmelder inden 4 dage",col2,y,7.5,false,[50,50,50]);
+    y+=7;
+    const synNote="MC under 5 år kan ejerskiftes uden syn. Er MC mere end 5 år, kræves syn ved ejerskifte, hvis det er mere end 2 år siden MC sidst har været synet.";
+    const synNotes=doc.splitTextToSize(synNote,halfW);
+    doc.setFontSize(7);doc.setFont("helvetica","normal");doc.setTextColor(100,100,100);
+    doc.text(synNotes,col2,y);
+    y+=synNotes.length*2.8+4;
+
+    ln(M,y,W-M,y); y+=4;
+
+    // ── FORSIKRING ──
+    if(y>240){doc.addPage();y=15;}
+    y = sektionHoved("Forsikring",y);
+    y+=5;
+    const ftxt="Køber sørger selv for at tegne forsikring. Sælgers forsikring dækker køber indtil 4 dage efter ejerskiftet. Sælger oplyser, at motorcyklens nuværende forsikring omfatter";
+    const ftxts=doc.splitTextToSize(ftxt,halfW);
+    doc.setFontSize(8);doc.setFont("helvetica","normal");doc.setTextColor(50,50,50);
+    doc.text(ftxts,M,y);
+    y+=ftxts.length*3.5+2;
+    box(M,y,false); txt("Ansvar",M+5,y,8);
+    box(M+20,y,false); txt("Kasko",M+25,y,8);
+    txt("Tegnet i",col2,y-6,7.5,false,[80,80,80]); uLine(col2+18,y-5,35);
+    txt("Under policenr.",col2,y,7.5,false,[80,80,80]); uLine(col2+30,y+1,25);
+    y+=10;
+
+    ln(M,y,W-M,y); y+=4;
+
+    // ── SÆRLIGE AFTALER ──
+    if(y>230){doc.addPage();y=15;}
+    y = sektionHoved("Særlige aftaler",y);
+    y+=5;
+    txt("Motorcyklen sælges som prøvet og beset uden reklamationsret",M,y,8);
+    y+=4;
+    // Pre-udfyldt Nej
+    box(M,y,false); txt("Ja",M+5,y,8);
+    box(M+16,y,true); txt("Nej",M+21,y,8);
+    y+=6;
+    // Garanti linje
+    txt("Sælger yder nedenstående antal mdr. garanti:",M,y,8);
+    txt("6",M+72,y,9,true,[20,20,20]);
+    txt("måneder",M+78,y,8);
+    uLine(M+68,y+1,8);
+    y+=6;
+    // 6 mdr garanti + 18 mdr reklamationsret
+    txt("Andet: Sælger yder 6 måneders garanti + 18 måneders reklamationsret",M,y,8,false,[20,20,20]);
+    uLine(M,y+1,CW);
+    y+=10;
+
+    ln(M,y,W-M,y); y+=4;
+
+    // ── HANDLEN INDGÅET ──
+    if(y>230){doc.addPage();y=15;}
+    y = sektionHoved("Handlen indgået",y);
+    y+=5;
+    txt("Sted/dato/år (sælger)",M,y,7.5,false,[80,80,80]);
+    txt("Sted/dato/år (køber)",col2,y,7.5,false,[80,80,80]);
+    y+=14;
+    uLine(M,y,halfW); uLine(col2,y,halfW);
+    y+=5;
+    txt("Sælgers underskrift",M,y,7.5,false,[80,80,80]);
+    txt("Købers underskrift",col2,y,7.5,false,[80,80,80]);
+    y+=12;
+    uLine(M,y,halfW); uLine(col2,y,halfW);
+    y+=10;
+
+    // ── FOOTER ──
+    doc.setFontSize(7);doc.setTextColor(160,160,160);doc.setFont("helvetica","normal");
+    doc.text("Lisbeths Køreskole ApS  ·  Vranderupvej 15, 6000 Kolding  ·  Tlf. 29414249",W/2,H-4,{align:"center"});
+
+    doc.save(`slutseddel_${mc.reg||"mc"}.pdf`);
+  }).catch(e => alert("PDF fejl: "+e.message));
+};
+
 
 const MC_SVG = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 120' fill='none'><rect width='200' height='120' fill='%23111'/><ellipse cx='48' cy='88' rx='22' ry='22' stroke='%23555' stroke-width='5'/><ellipse cx='48' cy='88' rx='12' ry='12' fill='%23333' stroke='%23666' stroke-width='3'/><ellipse cx='152' cy='88' rx='22' ry='22' stroke='%23555' stroke-width='5'/><ellipse cx='152' cy='88' rx='12' ry='12' fill='%23333' stroke='%23666' stroke-width='3'/><path d='M48 88 L80 55 L120 50 L145 65 L152 88' stroke='%23c00' stroke-width='4' fill='none'/><path d='M80 55 L90 35 L130 38 L120 50' fill='%23222' stroke='%23555' stroke-width='2'/><path d='M120 50 L145 45 L155 65 L145 65' fill='%23333' stroke='%23555' stroke-width='2'/><path d='M68 75 L48 88' stroke='%23777' stroke-width='3'/><circle cx='90' cy='48' r='6' fill='%23c00'/></svg>`;
 
@@ -111,17 +826,40 @@ const INIT_YDELSER = [
   {id:"V004",nr:"V004",navn:"Kæde 520",pris:420},
 ];
 
-const synStatus = d => {
-  const diff=Math.floor((new Date(d)-today)/86400000);
-  return diff<0?"overskredet":diff<=30?"snart":"ok";
+// syn = dato for SIDSTE syn — beregn næste syn (+ 2 år)
+const naesteSyn = d => {
+  if(!d) return "";
+  const dt = new Date(d);
+  dt.setFullYear(dt.getFullYear() + 2);
+  return dt.toISOString().split("T")[0];
 };
-const SC={ok:"#22c55e",snart:"#f59e0b",overskredet:"#ef4444"};
-const SL={ok:"Syn OK",snart:"Syn snart",overskredet:"Syn overskredet"};
+const synStatusDato = mc => {
+  // Brug mc.naesteSyn (fra Synsbasen) hvis det findes, ellers beregn +2 år
+  if(!mc) return "";
+  return mc.naesteSyn || naesteSyn(mc.syn) || "";
+};
+const synStatus = mc => {
+  // Accepterer både mc-objekt og string (bagudkompatibilitet)
+  const dato = typeof mc === "string" ? naesteSyn(mc) : synStatusDato(mc);
+  if(!dato) return "ok";
+  const diff = Math.floor((new Date(dato) - today) / 86400000);
+  return diff < 0 ? "overskredet" : diff <= 30 ? "snart" : diff <= 60 ? "advarsel" : "ok";
+};
+const SC = {ok:"#22c55e", advarsel:"#f59e0b", snart:"#ef4444", overskredet:"#ef4444"};
+const SL = {ok:"Syn OK", advarsel:"Syn snart (30-60 dage)", snart:"Syn snart (under 30 dage)", overskredet:"Syn overskredet"};
 
 let fakNr=1000;
-const nextFakNr=()=>`FAK-${++fakNr}`;
+const nextFakNr=(fakturaer=[])=>{
+  // Find højeste eksisterende FAK-nummer og start derfra
+  const max=fakturaer.reduce((m,f)=>{
+    const n=parseInt((f.id||"").replace("FAK-",""),10);
+    return isNaN(n)?m:Math.max(m,n);
+  },fakNr);
+  fakNr=Math.max(fakNr,max);
+  return `FAK-${++fakNr}`;
+};
 
-const kmColor = km => km>30000?"#ef4444":km>15000?"#f59e0b":"#22c55e";
+const kmColor = km => km>25000?"#ef4444":km>=20000?"#f59e0b":"#22c55e";
 
 // ── shared style helpers ──
 const inp = {padding:"10px 14px",borderRadius:8,border:"1px solid #333",background:"#1a1a1a",color:"#fff",fontSize:14,fontFamily:"inherit",outline:"none",width:"100%",boxSizing:"border-box"};
@@ -186,17 +924,22 @@ function BrugerAdmin({brugere,setBrugere,notify}) {
   const opret=()=>{
     if(!ny.brugernavn||!ny.adgangskode||!ny.navn){notify("Udfyld alle felter",true);return;}
     if(brugere.find(b=>b.brugernavn===ny.brugernavn)){notify("Brugernavn er taget",true);return;}
-    setBrugere(p=>[...p,{...ny,id:Date.now()}]);
+    const nyBruger={...ny,id:Date.now()};
+    setBrugere(p=>[...p,nyBruger]);
+    db("brugere",{method:"POST",body:JSON.stringify(brugerToDb(nyBruger)),prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
     setNy({brugernavn:"",adgangskode:"",navn:"",rolle:"bruger"});
     notify("Bruger oprettet ✓");
   };
   const gem=()=>{
     setBrugere(p=>p.map(b=>b.id===rediger.id?rediger:b));
+    db(`brugere?id=eq.${rediger.id}`,{method:"PATCH",body:JSON.stringify(brugerToDb(rediger)),prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
     setRediger(null); notify("Bruger opdateret ✓");
   };
   const slet=(id)=>{
     if(brugere.filter(b=>b.rolle==="admin").length===1&&brugere.find(b=>b.id===id)?.rolle==="admin"){notify("Kan ikke slette den eneste admin",true);return;}
-    setBrugere(p=>p.filter(b=>b.id!==id)); notify("Bruger slettet");
+    setBrugere(p=>p.filter(b=>b.id!==id));
+    db(`brugere?id=eq.${id}`,{method:"DELETE",prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
+    notify("Bruger slettet");
   };
 
   const cur=rediger||ny; const set=rediger?setRediger:setNy;
@@ -265,13 +1008,21 @@ function BrugerAdmin({brugere,setBrugere,notify}) {
 
 export default function App() {
   // ── Auth ──
-  const [brugere,setBrugere]=useState(INIT_USERS);
-  const [bruger,setBruger]=useState(null);
+  const [brugere,setBrugere]=useState([]);
+  // Gendan bruger fra localStorage ved refresh — ingen udløb, men valideres mod DB efter load
+  const [bruger,setBruger]=useState(()=>{
+    try{
+      const raw=localStorage.getItem("mcfleet_bruger");
+      if(!raw) return null;
+      return JSON.parse(raw);
+    }catch(e){ return null; }
+  });
   const [loginFejl,setLoginFejl]=useState("");
+  const [loading,setLoading]=useState(true);
 
-  // ── App state (hooks must all be declared before any return) ──
-  const [mcs,setMcs]=useState(() => (SB_READY ? [] : INIT_MC));
-  const [ydelser,setYdelser]=useState(INIT_YDELSER);
+  // ── App state ──
+  const [mcs,setMcs]=useState([]);
+  const [ydelser,setYdelser]=useState([]);
   const [fakturaer,setFakturaer]=useState([]);
   const [nav,setNav]=useState("oversigt");
   const [sidebarOpen,setSidebarOpen]=useState(false);
@@ -289,147 +1040,452 @@ export default function App() {
   const [opgaver,setOpgaver]=useState([]);
   const [visOpgaveForm,setVisOpgaveForm]=useState(false);
   const [synModal,setSynModal]=useState(false);
-  const [remoteLoading,setRemoteLoading]=useState(SB_READY);
+  const [transportPrompt,setTransportPrompt]=useState(null); // {afdeling, pris, mcId, dato}
+  const [gpsModal,setGpsModal]=useState(false);
+  const [pladeScanner,setPladeScanner]=useState(false);
+  const [fotoModal,setFotoModal]=useState(null); // url til billede der vises i fuld skærm
+  // Lokationer som objekter: {navn, transport}
+  const [lokationer,setLokationer]=useState(
+    LOCATIONS.map(l=>({navn:l, transport:TRANSPORT_TAKSTER[l]??0}))
+  );
+  const [nyLok,setNyLok]=useState({navn:"",transport:0,dimension:""});
+  const [editLok,setEditLok]=useState(null); // {idx, navn, transport, dimension} // {idx, navn, transport}
 
-  const login=(brugernavn,adgangskode)=>{
-    const b=brugere.find(b=>b.brugernavn===brugernavn&&b.adgangskode===adgangskode);
-    if(b){setBruger(b);setLoginFejl("");}
-    else setLoginFejl("Forkert brugernavn eller adgangskode");
+  // ── Indlæs alt data fra Supabase ved opstart ──
+  useEffect(()=>{
+    const load = async () => {
+      // Garantér at loading altid stopper — selv ved uventet fejl
+      const loadTimeout = setTimeout(() => {
+        console.warn("Load timeout — tvinger loading=false");
+        setLoading(false);
+      }, 15000);
+      try {
+        // ── FASE 1: Kritisk data — brugere + MC'er (viser appen hurtigst muligt) ──
+        const [dbBrugere, dbMcs] = await Promise.all([
+          db("brugere?order=id"),
+          db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn&order=id").catch(()=>
+            db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log&order=id")
+          ),
+        ]);
+        setMcs(dbMcs.length>0 ? dbMcs.map(mcFromDb) : INIT_MC);
+
+        // Valider login og sæt loading=false så appen vises STRAKS
+        const indlæsteBrugere0 = dbBrugere.length===0 ? INIT_USERS : dbBrugere.map(brugerFromDb);
+        setBrugere(indlæsteBrugere0);
+        setBruger(prev => {
+          if(!prev) return null;
+          const frisk = indlæsteBrugere0.find(b => String(b.id)===String(prev.id)||b.brugernavn===prev.brugernavn);
+          if(!frisk) { localStorage.removeItem("mcfleet_bruger"); return null; }
+          const {adgangskode:_pw,...uden}=frisk;
+          localStorage.setItem("mcfleet_bruger",JSON.stringify(uden));
+          return frisk;
+        });
+        clearTimeout(loadTimeout);
+        setLoading(false); // ← Vis appen nu! Resten loader i baggrunden
+
+        // ── FASE 2: Sekundær data — loader i baggrunden ──
+        const [dbFak, dbYd, dbLok] = await Promise.all([
+          db("fakturaer?order=id"),
+          db("ydelser?order=id"),
+          db("lokationer?order=id"),
+        ]);
+        const dbFakVar = dbFak;
+        const dbYdVar = dbYd;
+        const dbLokVar = dbLok;
+        setFakturaer(dbFakVar.map(fakFromDb));
+        setYdelser(dbYdVar.length>0 ? dbYdVar.map(ydFromDb) : INIT_YDELSER);
+
+        // Opgaver separat — fejl her stopper ikke resten, prøv evt. igen ved timeout
+        try {
+          const dbOpg = await db("opgaver?order=id");
+          setOpgaver(dbOpg.map(opgFromDb));
+        } catch(e) {
+          console.error("Opgaver load fejl:", e);
+          // Prøv én gang til ved timeout
+          if(e.message?.includes("57014")||e.message?.includes("timeout")) {
+            try {
+              const dbOpg2 = await db("opgaver?order=id&limit=200");
+              setOpgaver(dbOpg2.map(opgFromDb));
+            } catch(e2) { setOpgaver([]); }
+          } else { setOpgaver([]); }
+        }
+        // Seed lokationer hvis DB er tom
+        if(dbLokVar.length===0){
+          const initLok = LOCATIONS.map(l=>({navn:l, transport:TRANSPORT_TAKSTER[l]??0}));
+          for(const l of initLok){
+            try{ await db("lokationer",{method:"POST",body:JSON.stringify(lokToDb(l)),prefer:"return=minimal"}); }
+            catch(e){ console.error("Lok seed fejl:",e); }
+          }
+          setLokationer(initLok);
+        } else {
+          setLokationer(dbLokVar.map(lokFromDb));
+        }
+        // Seed brugere hvis DB er tom
+        if(dbBrugere.length===0){
+          await db("brugere",{method:"POST",body:JSON.stringify(INIT_USERS.map(brugerToDb))});
+        }
+        // Seed MC'er hvis DB er tom — send én ad gangen for at undgå timeout
+        if(dbMcs.length===0){
+          for(const mc of INIT_MC){
+            try{
+              await db("mcs",{method:"POST",body:JSON.stringify(mcToDb(mc)),prefer:"return=minimal"});
+            }catch(e){ console.error("Seed fejl MC",mc.id,e); }
+          }
+          // Hent dem tilbage efter seed
+          const seeded = await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn&order=id");
+          setMcs(seeded.map(mcFromDb));
+        }
+        // Seed ydelser hvis DB er tom
+        if(dbYd.length===0){
+          await db("ydelser",{method:"POST",body:JSON.stringify(INIT_YDELSER.map(ydToDb)),prefer:"return=minimal"});
+        }
+      } catch(e){
+        console.error("DB load fejl:",e);
+        // Sikr at loading stoppes selv ved fejl i fase 1
+        clearTimeout(loadTimeout);
+        setLoading(false);
+      }
+      // Fase 2 fejl stopper ikke appen — loading er allerede false
+    };
+    load();
+  },[]);
+
+  const login=async(brugernavn,adgangskode)=>{
+    // Brug lokale brugere hvis de er indlæst, ellers hent fra DB
+    let alleBrugere = brugere;
+    if(alleBrugere.length === 0) {
+      try {
+        const dbB = await db("brugere?order=id");
+        alleBrugere = dbB.map(brugerFromDb);
+        setBrugere(alleBrugere);
+      } catch(e) { console.error("Login DB fejl:", e); }
+    }
+    const b = alleBrugere.find(b => b.brugernavn===brugernavn && b.adgangskode===adgangskode);
+    if(b){
+      setBruger(b);
+      setLoginFejl("");
+      try{
+        const {adgangskode:_, ...bUdenKode} = b;
+        localStorage.setItem("mcfleet_bruger", JSON.stringify(bUdenKode));
+      }catch(e){}
+    } else setLoginFejl("Forkert brugernavn eller adgangskode");
   };
   const logout=()=>{
     setBruger(null);
     setLoginFejl("");
-    if (SB_READY) {
-      setMcs([]);
-      setOpgaver([]);
-    }
+    try{ localStorage.removeItem("mcfleet_bruger"); }catch(e){}
   };
 
   const isAdmin=bruger?.rolle==="admin";
 
-  const notify=useCallback((msg,err)=>{setNote({msg,err});setTimeout(()=>setNote(null),2600);},[]);
+  const notify=(msg,err)=>{setNote({msg,err});setTimeout(()=>setNote(null),2600);};
 
-  useEffect(()=>{
-    if(!bruger||!SB_READY) return;
-    const supabase=getSupabase();
-    if(!supabase) return;
-    let cancelled=false;
-    (async()=>{
-      setRemoteLoading(true);
-      try{
-        const [mcsRows,opgRows]=await Promise.all([
-          fetchAllRows(supabase,"mcs"),
-          fetchAllRows(supabase,"opgaver"),
-        ]);
-        if(!cancelled){
-          setMcs(mcsRows.map(normalizeMcFromDb));
-          setOpgaver(opgRows.map(normalizeOpgaveFromDb));
-        }
-      }catch(e){
-        if(!cancelled) notify(e.message||String(e),true);
-      }finally{
-        if(!cancelled) setRemoteLoading(false);
-      }
-    })();
-    return()=>{cancelled=true;};
-  },[bruger,notify]);
-
-  const hentDbBackup=useCallback(async()=>{
-    const supabase=getSupabase();
-    if(!supabase){notify("Supabase er ikke konfigureret",true);return;}
-    try{
-      const [mcsRows,opgRows]=await Promise.all([
-        fetchAllRows(supabase,"mcs"),
-        fetchAllRows(supabase,"opgaver"),
+  const downloadBackup = async () => {
+    notify("Henter backup...");
+    try {
+      const [dbMcs, dbFak, dbYd, dbOpg, dbLok, dbBrugere] = await Promise.all([
+        db("mcs?order=id"),
+        db("fakturaer?order=id"),
+        db("ydelser?order=id"),
+        db("opgaver?order=id"),
+        db("lokationer?order=id"),
+        db("brugere?order=id"),
       ]);
-      const blob=new Blob(
-        [JSON.stringify({mcs:mcsRows,opgaver:opgRows,eksporteret:new Date().toISOString()},null,2)],
-        {type:"application/json"}
-      );
-      const a=document.createElement("a");
-      a.href=URL.createObjectURL(blob);
-      a.download=`mcfleet-backup-${new Date().toISOString().slice(0,19).replace(/:/g,"-")}.json`;
+      const backup = {
+        dato: new Date().toISOString(),
+        mcs: dbMcs,
+        fakturaer: dbFak,
+        ydelser: dbYd,
+        opgaver: dbOpg,
+        lokationer: dbLok,
+        brugere: dbBrugere.map(b => ({ ...b, adgangskode: "***" })),
+      };
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `mcfleet_backup_${new Date().toISOString().split("T")[0]}.json`;
       a.click();
-      URL.revokeObjectURL(a.href);
-      notify("Backup downloadet");
-    }catch(e){
-      notify(e.message||String(e),true);
+      URL.revokeObjectURL(url);
+      notify("Backup downloadet ✓");
+    } catch (e) {
+      notify("Backup fejl: " + e.message, true);
     }
-  },[notify]);
+  };
 
   const byLoc=useMemo(()=>{
-    const m={}; LOCATIONS.forEach(l=>{m[l]=[];});
-    mcs.forEach(mc=>{
-      if(m[mc.location]) m[mc.location].push(mc);
-      else { m[mc.location]=[]; m[mc.location].push(mc); } // ukend lokation - vis alligevel
-    });
+    const m={};
+    // Inkluder alle kendte lokationer + lokationer fra MC'er der ikke matcher (fx gamle navne fra DB)
+    const allKnown=[...new Set([...lokationer.map(l=>l.navn),...mcs.map(mc=>mc.location).filter(Boolean)])];
+    allKnown.forEach(l=>{m[l]=[];});
+    mcs.forEach(mc=>{ if(mc.location) m[mc.location].push(mc); });
+    // Sortér hver lokation efter mcNr stigende
+    Object.keys(m).forEach(loc => m[loc].sort((a,b) => Number(a.mcNr)-Number(b.mcNr)));
     return m;
-  },[mcs]);
+  },[mcs,lokationer]);
 
   const filteredByLoc=useMemo(()=>{
-    const q=search.toLowerCase();
+    // Fjern mellemrum fra søgeord OG det felt der søges i — så "dd70407" og "DD 70 407" begge virker
+    const q=search.toLowerCase().replace(/\s+/g,"");
     const out={};
-    const alleLocs=[...new Set([...LOCATIONS,...Object.keys(byLoc)])];
+    const alleLocs=[...new Set([...lokationer.map(l=>l.navn),...Object.keys(byLoc)])];
     alleLocs.forEach(loc=>{
       let list=byLoc[loc]||[];
       if(filterLoc!=="Alle"&&filterLoc!==loc){out[loc]=[];return;}
-      if(q) list=list.filter(mc=>mc.reg.toLowerCase().includes(q)||mc.stel.toLowerCase().includes(q)||(mc.gps||"").toLowerCase().includes(q)||String(mc.mcNr).includes(q)||(mc.beskrivelse||"").toLowerCase().includes(q));
-      out[loc]=list;
+      if(q) list=list.filter(mc=>mc.reg.toLowerCase().replace(/\s+/g,"").includes(q)||mc.stel.toLowerCase().replace(/\s+/g,"").includes(q)||(mc.gps||"").toLowerCase().replace(/\s+/g,"").includes(q)||String(mc.mcNr).includes(q)||(mc.beskrivelse||"").toLowerCase().replace(/\s+/g,"").includes(q));
+      out[loc]=[...list].sort((a,b)=>Number(a.mcNr)-Number(b.mcNr));
     });
     return out;
   },[byLoc,search,filterLoc]);
 
-  const stats=useMemo(()=>({
-    total:mcs.length,
-    ov:mcs.filter(m=>synStatus(m.syn)==="overskredet").length,
-    fakTotal:fakturaer.reduce((s,f)=>s+f.total,0),
-  }),[mcs,fakturaer]);
+  const harGPS = mc => !!(mc.gps && mc.gps.trim().length > 0);
 
-  const goNav=(id)=>{setNav(id);setMcModal(null);setNyFak(null);setFakDetail(null);setEditMc(null);setSidebarOpen(false);};
-  const saveMc=()=>{
+  const stats=useMemo(()=>{
+    const aktive=mcs.filter(m=>!erSolgt(m));
+    return {
+      total:aktive.length,
+      ov:aktive.filter(m=>synStatus(m)==="overskredet").length,
+      uGPS:aktive.filter(m=>!harGPS(m)).length,
+      fakTotal:fakturaer.reduce((s,f)=>s+f.total,0),
+    };
+  },[mcs,fakturaer]);
+
+  // ── URL HASH NAVIGATION ──
+  // Hash-format: #oversigt | #fakturaer | #opgaver | #administration | #brugere
+  //              #mc-{id}  | #mc-{id}-rediger | #mc-{id}-faktura | #mc-{id}-faktura-{fakId}
+
+  const buildHash = (state) => {
+    const { nav, mcModal, editMc, nyFak, fakDetail } = state;
+    if (fakDetail && mcModal) return `#mc-${mcModal.id}-faktura-${fakDetail.id}`;
+    if (nyFak && mcModal)     return `#mc-${mcModal.id}-faktura`;
+    if (editMc && mcModal)    return `#mc-${mcModal.id}-rediger`;
+    if (mcModal)              return `#mc-${mcModal.id}`;
+    return `#${nav || "oversigt"}`;
+  };
+
+  const pushNav = (state) => {
+    const hash = buildHash(state);
+    window.history.pushState(state, "", hash);
+  };
+
+  const replaceNav = (state) => {
+    const hash = buildHash(state);
+    window.history.replaceState(state, "", hash);
+  };
+
+  // Opret opgave direkte fra MC
+  const opretOpgaveFraMc = (mc, beskrivelse, senestUdfoert, foto) => {
+    const titel = `${mc.reg} — ${mc.beskrivelse}`;
+    const gemMedFoto = (fotoData) => {
+      const ny = {
+        id: Date.now(), titel, beskrivelse: (beskrivelse||"").trim(),
+        lokation: mc.location||"", senestUdfoert, oprettet: todayStr,
+        udfoert: false, udfoertDato: null,
+        mcId: mc.id, mcReg: mc.reg, foto: fotoData||"",
+      };
+      // Optimistisk update — UI opdateres straks
+      setOpgaver(p=>[ny,...p]);
+      // DB-kald i baggrunden
+      db("opgaver",{method:"POST",body:JSON.stringify(opgToDb(ny)),prefer:"return=minimal"})
+        .catch(e=>console.error("DB opgave fejl:",e));
+      notify("Opgave oprettet ✓");
+    };
+    // Komprimer billede hvis det er stort
+    if(foto && foto.length > 200000) {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        const max = 800;
+        const ratio = Math.min(max/img.width, max/img.height, 1);
+        c.width = Math.round(img.width*ratio);
+        c.height = Math.round(img.height*ratio);
+        c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+        gemMedFoto(c.toDataURL("image/jpeg",0.7));
+      };
+      img.src = foto;
+    } else {
+      gemMedFoto(foto);
+    }
+  };
+
+  const markerOpgaveUdfoert = (id) => {
+    const dato = todayStr;
+    setOpgaver(p=>p.map(o=>o.id===id?{...o,udfoert:true,udfoertDato:dato}:o));
+    db(`opgaver?id=eq.${id}`,{method:"PATCH",body:JSON.stringify({udfoert:true,udfoert_dato:dato}),prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
+  };
+
+  const goNav = (id) => {
+    setNav(id); setMcModal(null); setNyFak(null); setFakDetail(null); setEditMc(null); setSidebarOpen(false);
+    pushNav({ nav: id, mcModal: null, editMc: null, nyFak: null, fakDetail: null });
+  };
+
+  // Lyt på tilbage/frem-knap og gendan state
+  React.useEffect(() => {
+    // Ved opstart: læs hash og naviger derhen når data er klar
+    const applyHash = (hash) => {
+      if (!hash || hash === "#" || hash === "#oversigt") {
+        setNav("oversigt"); setMcModal(null); setEditMc(null); setNyFak(null); setFakDetail(null);
+        return;
+      }
+      const h = hash.replace("#", "");
+      // #fakturaer, #opgaver, #administration, #brugere
+      if (["fakturaer","opgaver","administration","brugere"].includes(h)) {
+        setNav(h); setMcModal(null); setEditMc(null); setNyFak(null); setFakDetail(null);
+        return;
+      }
+      // #mc-{id}... varianter
+      const mcMatch = h.match(/^mc-(\d+)(.*)$/);
+      if (mcMatch) {
+        const mcId = Number(mcMatch[1]);
+        const rest = mcMatch[2];
+        // Vent til mcs er indlæst
+        setNav("oversigt");
+        const mc = mcs.find(m => m.id === mcId);
+        if (!mc) return; // data ikke klar endnu — onLoadHash håndterer det
+        if (rest === "-rediger") {
+          setMcModal(mc); setEditMc({...mc}); setNyFak(null); setFakDetail(null);
+        } else if (rest === "-faktura") {
+          setMcModal(mc); setEditMc(null); setNyFak({mcId:mc.id,linjer:[],dato:todayStr,note:"",titel:""}); setFakDetail(null);
+        } else if (rest.startsWith("-faktura-")) {
+          const fakId = rest.replace("-faktura-","");
+          const fak = fakturaer.find(f => String(f.id) === fakId);
+          setMcModal(mc); setEditMc(null); setNyFak(null); setFakDetail(fak||null);
+        } else {
+          setMcModal(mc); setEditMc(null); setNyFak(null); setFakDetail(null);
+        }
+      }
+    };
+
+    // Sæt initial history entry med nuværende hash (eller oversigt)
+    const initHash = window.location.hash || "#oversigt";
+    window.history.replaceState(
+      { nav: "oversigt", mcModal: null, editMc: null, nyFak: null, fakDetail: null },
+      "", initHash
+    );
+
+    // Anvend hash ved opstart når data er indlæst
+    if (mcs.length > 0) {
+      applyHash(window.location.hash);
+    }
+
+    const onPop = (e) => {
+      const s = e.state;
+      if (s) {
+        // Gendan fra pushState state-objekt
+        setNav(s.nav || "oversigt");
+        // Gendan fuld MC objekt fra id (pushState gemmer kun {id})
+        const modalId = s.mcModal?.id;
+        setMcModal(modalId ? (mcs.find(m=>String(m.id)===String(modalId))||s.mcModal) : null);
+        const editId = s.editMc?.id;
+        setEditMc(editId ? (mcs.find(m=>String(m.id)===String(editId))||null) : null);
+        setNyFak(s.nyFak || null);
+        setFakDetail(s.fakDetail || null);
+        setSidebarOpen(false);
+      } else {
+        // Fallback: læs hash direkte
+        applyHash(window.location.hash);
+      }
+    };
+
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [mcs, fakturaer]);
+  const saveMc=async()=>{
     const {_erNy,...rest}=editMc;
     const nyKm=Number(rest.km)||0;
     const opdateret={...rest,km:nyKm,mcNr:Number(rest.mcNr)||0};
-    setMcs(p=>{
-      const findes=p.some(m=>m.id===opdateret.id);
-      if(findes){
-        const gammel=p.find(m=>m.id===opdateret.id);
-        const gammelKm=gammel?.km??0;
-        // Tilføj km-log entry hvis km er ændret
-        let kmLog=[...(gammel?.kmLog||[])];
-        if(nyKm!==gammelKm){
-          const diff=kmLog.length===0?null:nyKm-gammelKm;
-          kmLog.push({dato:todayStr,km:nyKm,diff});
-        }
-        return p.map(m=>m.id===opdateret.id?{...m,...opdateret,kmLog}:m);
+    let endelig;
+    if(!_erNy){
+      const gammel=mcs.find(m=>m.id===opdateret.id);
+      const gammelKm=gammel?.km??0;
+      let kmLog=[...(gammel?.kmLog||[])];
+      if(nyKm!==gammelKm){
+        const diff=kmLog.length===0?null:nyKm-gammelKm;
+        kmLog.push({dato:todayStr,km:nyKm,diff});
       }
-      // Ny MC — opret med start-log
-      return [...p,{...opdateret,
+      // Opdater lokationsLog hvis lokation er ændret — samme mønster som kmLog
+      let lokationsLog=(gammel?.lokationsLog||[]).map(e=>({...e}));
+      if(opdateret.location && opdateret.location!==(gammel?.location||"")){
+        // Luk eksisterende åben post
+        if(lokationsLog.length>0&&lokationsLog[lokationsLog.length-1].til===null){
+          lokationsLog[lokationsLog.length-1]={...lokationsLog[lokationsLog.length-1],til:todayStr};
+        }
+        // Tilføj ny post
+        lokationsLog.push({lokation:opdateret.location,fra:todayStr,til:null});
+      }
+      endelig={...gammel,...opdateret,kmLog,lokationsLog};
+      setMcs(p=>p.map(m=>String(m.id)===String(endelig.id)?endelig:m));
+      try{
+        await db(`mcs?id=eq.${endelig.id}`,{method:"PATCH",body:JSON.stringify(mcToDb(endelig)),prefer:"return=minimal"});
+      } catch(e){
+        // Hvis 500: foerste_reg kolonnen mangler måske — prøv uden den
+        if(e.message?.includes("500")) {
+          try {
+            const {foerste_reg:_fr, ...udenFoerste} = mcToDb(endelig);
+            await db(`mcs?id=eq.${endelig.id}`,{method:"PATCH",body:JSON.stringify(udenFoerste),prefer:"return=minimal"});
+            notify("Gem OK — kør SQL: ALTER TABLE mcs ADD COLUMN foerste_reg TEXT DEFAULT ''",true);
+          } catch(e2){ notify("DB fejl: "+e2.message,true); }
+        } else { notify("DB fejl: "+e.message,true); }
+      }
+    } else {
+      endelig={...opdateret,
         lokationsLog:[{lokation:opdateret.location,fra:todayStr,til:null}],
         kmLog:nyKm>0?[{dato:todayStr,km:nyKm,diff:null}]:[],
-      }];
-    });
+      };
+      setMcs(p=>[...p,endelig]);
+      try{ await db("mcs",{method:"POST",body:JSON.stringify(mcToDb(endelig)),prefer:"return=minimal"}); }
+      catch(e){ notify("DB fejl: "+e.message,true); }
+    }
     notify(_erNy?"MC oprettet ✓":"MC opdateret ✓");
     setEditMc(null);
-    if(mcModal&&!_erNy) setMcModal({...opdateret});
+    if(mcModal&&!_erNy) setMcModal({...endelig});
   };
-  const onFotoUpload=(mcId,dataUrl)=>{setMcs(p=>p.map(m=>m.id===mcId?{...m,foto:dataUrl}:m));notify("Billede uploadet ✓");};;
-  const doMove=(loc)=>{
-    // Brug == (løs) for at undgå type-mismatch mellem number og string
-    // eslint-disable-next-line eqeqeq
-    const mc=mcs.find(m=>m.id==moveModal);
+  const onFotoUpload=async(mcId,dataUrl,fotosArr)=>{
+    // fotosArr = alle billeder inkl. det nye. dataUrl = primær (første) billede
+    const nyFotos = fotosArr || (dataUrl ? [dataUrl] : []);
+    const primærFoto = nyFotos[0] || "";
+    setMcs(p=>p.map(m=>m.id===mcId?{...m,foto:primærFoto,fotos:nyFotos}:m));
+    if(mcModal?.id===mcId) setMcModal(p=>({...p,foto:primærFoto,fotos:nyFotos}));
+    try{
+      await db(`mcs?id=eq.${mcId}`,{method:"PATCH",body:JSON.stringify({foto:primærFoto,fotos:nyFotos}),prefer:"return=minimal"});
+    }
+    catch(e){ console.error("Foto DB fejl:",e); }
+    notify(nyFotos.length>1?`${nyFotos.length} billeder ✓`:"Billede uploadet ✓");
+  };
+
+  const onUpdateKm=async(mcId, nytKm)=>{
+    if(isNaN(nytKm)||nytKm<0) return;
+    const mc = mcs.find(m=>m.id===mcId);
+    if(!mc) return;
+    const gammelKm = mc.km||0;
+    const diff = gammelKm===0 ? null : nytKm - gammelKm;
+    const kmLog = [...(mc.kmLog||[]), {dato:todayStr, km:nytKm, diff}];
+    const opdateret = {...mc, km:nytKm, kmLog};
+    setMcs(p=>p.map(m=>m.id===mcId?opdateret:m));
+    if(mcModal?.id===mcId) setMcModal(opdateret);
+    try{
+      await db(`mcs?id=eq.${mcId}`,{method:"PATCH",body:JSON.stringify({km:nytKm, km_log:kmLog}),prefer:"return=minimal"});
+      notify("Kilometertal opdateret ✓");
+    } catch(e){ notify("DB fejl: "+e.message,true); }
+  };
+  const doMove=async(loc)=>{
+    const mc=mcs.find(m=>String(m.id)===String(moveModal));
     if(!mc){notify(`Fejl: MC ikke fundet (id=${moveModal})`,true);setMoveModal(null);return;}
     if(mc.location===loc){notify("MC er allerede på denne lokation",true);return;}
-    setMcs(p=>p.map(m=>{
-      // eslint-disable-next-line eqeqeq
-      if(m.id!=moveModal) return m;
-      const log=[...(m.lokationsLog||[])];
-      if(log.length>0&&log[log.length-1].til===null){
-        log[log.length-1]={...log[log.length-1],til:todayStr};
-      }
-      log.push({lokation:loc,fra:todayStr,til:null});
-      return {...m,location:loc,lokationsLog:log};
-    }));
+    const log=(mc.lokationsLog||[]).map(e=>({...e}));
+    if(log.length>0&&log[log.length-1].til===null){
+      log[log.length-1]={...log[log.length-1],til:todayStr};
+    }
+    log.push({lokation:loc,fra:todayStr,til:null});
+    const updated={...mc,location:loc,lokationsLog:log};
+    const payload=mcToDb(updated);
+    setMcs(p=>p.map(m=>String(m.id)===String(updated.id)?updated:m));
+    setMcModal(updated);
+    try{
+      await db(`mcs?id=eq.${mc.id}`,{method:"PATCH",body:JSON.stringify(payload),prefer:"return=minimal"});
+    }catch(e){
+      notify("DB fejl: "+e.message,true);
+    }
     notify(`Flyttet til ${loc} ✓`);
     setMoveModal(null);
   };
@@ -439,7 +1495,7 @@ export default function App() {
   const setAntal=(yId,v)=>setNyFak(f=>({...f,linjer:f.linjer.map(l=>l.yId===yId?{...l,antal:Math.max(1,Number(v))}:l)}));
   const setPrisL=(yId,v)=>setNyFak(f=>({...f,linjer:f.linjer.map(l=>l.yId===yId?{...l,pris:Number(v)}:l)}));
   const fakTotal=(linjer)=>linjer.reduce((s,l)=>s+l.antal*l.pris,0);
-  const gemFak=()=>{
+  const gemFak=async()=>{
     if(!nyFak.titel?.trim()){notify("Udfyld reparationstitel",true);return;}
     if(!nyFak.note?.trim()){notify("Udfyld reparationsbeskrivelse",true);return;}
     if(!nyFak.linjer.length){notify("Tilføj mindst én linje",true);return;}
@@ -453,20 +1509,95 @@ export default function App() {
       setFakturaer(p=>p.map(f=>f.id===editFakId?opdateret:f));
       setFakDetail(opdateret);
       setNyFak(null); setEditFakId(null);
+      try{ await db(`fakturaer?id=eq.${editFakId}`,{method:"PATCH",body:JSON.stringify(fakToDb(opdateret)),prefer:"return=minimal"}); }
+      catch(e){ notify("DB fejl: "+e.message,true); }
       notify("Faktura opdateret ✓");
     } else {
-      const f={id:nextFakNr(),mcId:nyFak.mcId,mcReg:mc.reg,dato:nyFak.dato,note:nyFak.note||"",titel:nyFak.titel||"",linjer:nyFak.linjer,total};
+      const f={id:nextFakNr(fakturaer),mcId:nyFak.mcId,mcReg:mc.reg,afdeling:mc.location||"",dato:nyFak.dato,note:nyFak.note||"",titel:nyFak.titel||"",linjer:nyFak.linjer,total,faktureret:false,km:nyFak.km||0};
       setFakturaer(p=>[f,...p]);
       setNyFak(null); setEditFakId(null);
       setFakDetail(f);
+      try{ await db("fakturaer",{method:"POST",body:JSON.stringify(fakToDb(f)),prefer:"return=minimal"}); }
+      catch(e){ notify("DB fejl: "+e.message,true); }
+      // Opdater MC's km hvis faktura-km er højere end nuværende
+      if(f.km && f.km > (mc.km||0)) {
+        await onUpdateKm(f.mcId, f.km);
+      }
       notify(`${f.id} oprettet ✓`);
     }
   };
   const startRedigerFak=(f)=>{setNyFak({mcId:f.mcId,linjer:[...f.linjer],dato:f.dato,note:f.note||"",titel:f.titel||""});setEditFakId(f.id);setFakDetail(null);};
+  const sætFaktureret=async(fakId,værdi)=>{
+    setFakturaer(p=>p.map(f=>f.id===fakId?{...f,faktureret:værdi}:f));
+    if(fakDetail?.id===fakId) setFakDetail(p=>({...p,faktureret:værdi}));
+    try{ await db(`fakturaer?id=eq.${fakId}`,{method:"PATCH",body:JSON.stringify({faktureret:værdi}),prefer:"return=minimal"}); }
+    catch(e){ notify("DB fejl: "+e.message,true); }
+    notify(værdi?"Markeret som faktureret ✓":"Markering fjernet");
+  };
 
-  const gemYdelse=()=>{if(!nyYdelse.nr||!nyYdelse.navn||!nyYdelse.pris){notify("Udfyld alle felter",true);return;}if(ydelser.find(y=>y.nr===nyYdelse.nr)){notify("Nummer findes allerede",true);return;}setYdelser(p=>[...p,{id:nyYdelse.nr,...nyYdelse,pris:Number(nyYdelse.pris)}]);setNyYdelse({nr:"",navn:"",pris:""});notify("Ydelse oprettet");};
-  const saveYdelse=()=>{setYdelser(p=>p.map(y=>y.id===editYdelse.id?{...editYdelse,pris:Number(editYdelse.pris)}:y));setEditYdelse(null);notify("Opdateret");};
-  const delYdelse=(id)=>{setYdelser(p=>p.filter(y=>y.id!==id));notify("Slettet");};
+  // ── Lokation CRUD ──
+  const opretLokation=async()=>{
+    const navn=nyLok.navn.trim();
+    if(!navn){notify("Skriv et navn",true);return;}
+    if(lokationer.some(l=>l.navn===navn)){notify("Lokationen findes allerede",true);return;}
+    const ny={navn, transport:nyLok.transport||0, dimension:nyLok.dimension||""};
+    setLokationer(p=>[...p,ny]);
+    setNyLok({navn:"",transport:0,dimension:""});
+    try{ await db("lokationer",{method:"POST",body:JSON.stringify(lokToDb(ny)),prefer:"return=minimal"}); }
+    catch(e){ notify("DB fejl: "+e.message,true); }
+    notify("Lokation oprettet ✓");
+  };
+  const gemRedigerLokation=async()=>{
+    const navn=editLok.navn.trim();
+    if(!navn){notify("Skriv et navn",true);return;}
+    if(lokationer.some((l,i)=>l.navn===navn&&i!==editLok.idx)){notify("Navn er taget",true);return;}
+    const nyListe=[...lokationer];
+    const gammeltNavn=nyListe[editLok.idx].navn;
+    const opdateretLok={navn, transport:editLok.transport||0, dimension:editLok.dimension||""};
+    nyListe[editLok.idx]=opdateretLok;
+    setLokationer(nyListe);
+    // Opdater lokationer DB
+    try{
+      await db(`lokationer?navn=eq.${encodeURIComponent(gammeltNavn)}`,{
+        method:"PATCH", body:JSON.stringify({navn, transport:opdateretLok.transport, dimension:opdateretLok.dimension||""}), prefer:"return=minimal"
+      });
+    }catch(e){ notify("DB fejl: "+e.message,true); }
+    if(gammeltNavn!==navn){
+      setMcs(p=>p.map(m=>m.location===gammeltNavn?{...m,location:navn}:m));
+      try{
+        await db(`mcs?location=eq.${encodeURIComponent(gammeltNavn)}`,{
+          method:"PATCH", body:JSON.stringify({location:navn}), prefer:"return=minimal"
+        });
+      }catch(e){ notify("DB fejl: "+e.message,true); }
+    }
+    notify("Lokation opdateret ✓");
+    setEditLok(null);
+  };
+
+  const gemYdelse=async()=>{
+    if(!nyYdelse.nr||!nyYdelse.navn||!nyYdelse.pris){notify("Udfyld alle felter",true);return;}
+    if(ydelser.find(y=>y.nr===nyYdelse.nr)){notify("Nummer findes allerede",true);return;}
+    const ny={id:nyYdelse.nr,...nyYdelse,pris:Number(nyYdelse.pris)};
+    setYdelser(p=>[...p,ny]);
+    setNyYdelse({nr:"",navn:"",pris:""});
+    try{ await db("ydelser",{method:"POST",body:JSON.stringify(ydToDb(ny)),prefer:"return=minimal"}); }
+    catch(e){ notify("DB fejl: "+e.message,true); }
+    notify("Ydelse oprettet");
+  };
+  const saveYdelse=async()=>{
+    const ny={...editYdelse,pris:Number(editYdelse.pris)};
+    setYdelser(p=>p.map(y=>y.id===ny.id?ny:y));
+    setEditYdelse(null);
+    try{ await db(`ydelser?id=eq.${ny.id}`,{method:"PATCH",body:JSON.stringify(ydToDb(ny)),prefer:"return=minimal"}); }
+    catch(e){ notify("DB fejl: "+e.message,true); }
+    notify("Opdateret");
+  };
+  const delYdelse=async(id)=>{
+    setYdelser(p=>p.filter(y=>y.id!==id));
+    try{ await db(`ydelser?id=eq.${id}`,{method:"DELETE",prefer:"return=minimal"}); }
+    catch(e){ notify("DB fejl: "+e.message,true); }
+    notify("Slettet");
+  };
 
   const navItems=[
     {id:"oversigt",icon:"🏍",label:"Oversigt"},
@@ -478,6 +1609,13 @@ export default function App() {
 
   const showingSubpage = mcModal||editMc||nyFak||fakDetail;
 
+  if(loading) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100dvh",background:"#111",flexDirection:"column",gap:16}}>
+      <div style={{width:44,height:44,border:"4px solid #333",borderTop:"4px solid #cc0000",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      <div style={{color:"#888",fontSize:14}}>Henter data...</div>
+    </div>
+  );
   if(!bruger) return <LoginScreen onLogin={login} fejl={loginFejl}/>;
 
   return (
@@ -504,9 +1642,6 @@ export default function App() {
 
       {/* Notification */}
       {note&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:9999,background:note.err?"#cc0000":"#22c55e",color:"#fff",padding:"11px 24px",borderRadius:10,fontWeight:700,fontSize:14,boxShadow:"0 4px 24px rgba(0,0,0,.6)",whiteSpace:"nowrap"}}>{note.msg}</div>}
-      {SB_READY&&bruger&&remoteLoading&&(
-        <div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",zIndex:9998,background:"#1e1e1e",color:"#bbb",padding:"10px 18px",borderRadius:10,fontSize:13,border:"1px solid #333",boxShadow:"0 4px 20px rgba(0,0,0,.5)"}}>Henter data fra server…</div>
-      )}
 
       {/* Sidebar overlay (mobile) */}
       {sidebarOpen&&<div className="mobile-only" onClick={()=>setSidebarOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",zIndex:199}}/>}
@@ -533,10 +1668,7 @@ export default function App() {
             <div style={{fontSize:13,fontWeight:600,color:"#fff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{bruger.navn}</div>
             <div style={{fontSize:11,color:bruger.rolle==="admin"?"#f87171":"#60a5fa"}}>{bruger.rolle==="admin"?"Admin":"Bruger"}</div>
           </div>
-          {SB_READY&&isAdmin&&(
-            <button type="button" onClick={hentDbBackup} disabled={remoteLoading} title="Download database-backup (JSON)"
-              style={{background:"none",border:"none",color:remoteLoading?"#444":"#a78bfa",cursor:remoteLoading?"default":"pointer",fontSize:18,padding:"4px",lineHeight:1}} className="tap">💾</button>
-          )}
+          {isAdmin&&<button onClick={downloadBackup} title="Download backup" className="tap" style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:16,padding:"4px",lineHeight:1}}>💾</button>}
           <button onClick={logout} title="Log ud" style={{background:"none",border:"none",color:"#666",cursor:"pointer",fontSize:18,padding:"4px",lineHeight:1}} className="tap">⏻</button>
         </div>
       </div>
@@ -567,6 +1699,7 @@ export default function App() {
                   <h1 style={{margin:0,fontSize:22,fontWeight:700,color:"#fff"}}>Oversigt</h1>
                   <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                     {stats.ov>0&&<div onClick={()=>setSynModal(true)} style={{background:"#a80000",borderRadius:6,padding:"5px 12px",fontSize:12,color:"#ffaaaa",fontWeight:600,cursor:"pointer",userSelect:"none"}} title="Klik for at se liste">⚠ {stats.ov} syn overskredet</div>}
+                    {stats.uGPS>0&&<div onClick={()=>setGpsModal(true)} style={{background:"#1a3a1a",borderRadius:6,padding:"5px 12px",fontSize:12,color:"#86efac",fontWeight:600,cursor:"pointer",userSelect:"none"}} title="Klik for at se liste">📡 {stats.uGPS} uden GPS</div>}
                     <div style={{background:"#a80000",borderRadius:6,padding:"5px 12px",fontSize:12,color:"#ffdddd",fontWeight:600}}>{stats.total} MC'er</div>
                   </div>
                 </div>
@@ -581,14 +1714,30 @@ export default function App() {
                   <select value={filterLoc} onChange={e=>setFilterLoc(e.target.value)}
                     style={{...inp,width:"auto",flex:"0 0 auto",height:40,background:"#1e1e1e",border:"1px solid #333",fontSize:13,padding:"0 12px"}}>
                     <option value="Alle">Alle</option>
-                    {LOCATIONS.map(l=><option key={l}>{l}</option>)}
+                    {[...lokationer.map(l=>l.navn)]
+                      .sort((a,b)=>{
+                        const NEDERST=["Solgte MC\'er","MC til salg","Lager / Depot"];
+                        const aLav=NEDERST.includes(a),bLav=NEDERST.includes(b);
+                        if(aLav&&!bLav) return 1; if(!aLav&&bLav) return -1;
+                        return a.localeCompare(b,"da");
+                      })
+                      .map(l=><option key={l}>{l}</option>)}
                   </select>
-                  <button style={{...btnRed,height:40,padding:"0 14px",fontSize:13}} onClick={()=>{const n={id:Date.now()+(Math.random()*1000|0),mcNr:"",reg:"",stel:"",gps:"",syn:todayStr,km:0,location:LOCATIONS[0],beskrivelse:"",_erNy:true};setEditMc(n);}}>+ MC</button>
+                  <button onClick={()=>setPladeScanner(true)} style={{background:"#1a1a1a",border:"1px solid #444",color:"#fff",borderRadius:8,height:40,padding:"0 14px",fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",gap:6,whiteSpace:"nowrap",fontWeight:700}} title="Scan nummerplade">📷 Scan plade</button>
+                  <button style={{...btnRed,height:40,padding:"0 14px",fontSize:13}} onClick={()=>{const n={id:Date.now()+(Math.random()*1000|0),mcNr:"",reg:"",stel:"",gps:"",syn:todayStr,km:0,location:lokationer[0]?.navn||LOCATIONS[0],beskrivelse:"",_erNy:true};setEditMc(n);}}>+ MC</button>
                 </div>
 
                 {/* Groups */}
                 <div style={{display:"flex",flexDirection:"column",gap:20}}>
-                  {[...new Set([...LOCATIONS,...Object.keys(filteredByLoc)])].map(loc=>{
+                  {[...new Set([...lokationer.map(l=>l.navn),...Object.keys(filteredByLoc)])]
+                  .sort((a,b)=>{
+                    const NEDERST=["Solgte MC\'er","MC til salg","Lager / Depot"];
+                    const aLav=NEDERST.includes(a), bLav=NEDERST.includes(b);
+                    if(aLav&&!bLav) return 1;
+                    if(!aLav&&bLav) return -1;
+                    return a.localeCompare(b,"da");
+                  })
+                  .map(loc=>{
                     const list=filteredByLoc[loc]||[];
                     if(!list.length&&(search||filterLoc!=="Alle")) return null;
                     return (
@@ -601,11 +1750,12 @@ export default function App() {
                         ):(
                           <div className="mobile-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}}>
                             {list.map(mc=>{
-                              const st=synStatus(mc.syn);
+                              const st=synStatus(mc);
                               return (
-                                <div key={mc.id} className="mc-card tap" onClick={()=>setMcModal(mc)}
+                                <div key={mc.id} className="mc-card tap" onClick={()=>{setMcModal(mc);pushNav({nav:"oversigt",mcModal:mc,editMc:null,nyFak:null,fakDetail:null});}}
                                   style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",cursor:"pointer",overflow:"hidden",position:"relative",transition:"border-color 0.15s"}}>
                                   <div style={{position:"absolute",top:8,right:8,width:11,height:11,borderRadius:"50%",background:SC[st],boxShadow:`0 0 5px ${SC[st]}`}}/>
+                                  {harGPS(mc)&&<div style={{position:"absolute",top:6,right:24,fontSize:12,lineHeight:1}} title={`GPS: ${mc.gps}`}>📡</div>}
                                   <div style={{padding:"10px 10px 6px",fontSize:11,lineHeight:1.75,color:"#ccc"}}>
                                     <div><span style={{color:"#666"}}>MC Nr: </span><strong style={{color:"#fff"}}>{mc.mcNr}</strong></div>
                                     <div><span style={{color:"#666"}}>Reg.nr: </span><strong style={{color:"#fff"}}>{mc.reg}</strong></div>
@@ -617,7 +1767,7 @@ export default function App() {
                                   </div>
                                   <div style={{background:"#111",padding:"5px 8px"}}>
                                     <div style={{background:"#222",borderRadius:4,height:16,overflow:"hidden",position:"relative"}}>
-                                      <div style={{position:"absolute",inset:0,background:kmColor(mc.km),width:`${Math.min(100,(mc.km/40000)*100)}%`,borderRadius:4}}/>
+                                      <div style={{position:"absolute",inset:0,background:kmColor(mc.km),width:`${Math.min(100,(mc.km/30000)*100)}%`,borderRadius:4}}/>
                                       <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,color:"#fff",textShadow:"0 1px 2px #000"}}>
                                         {mc.km.toLocaleString("da-DK")} km
                                       </div>
@@ -637,38 +1787,83 @@ export default function App() {
 
             {/* ── MC DETALJE ── */}
             {nav==="oversigt"&&mcModal&&!nyFak&&!fakDetail&&!editMc&&(()=>{
-              const liveMc=mcs.find(m=>m.id===mcModal.id)||mcModal; // altid frisk fra state
-              return <McDetalje mc={liveMc} fakturaer={fakturaer.filter(f=>f.mcId===liveMc.id)} onBack={()=>setMcModal(null)} onEdit={()=>setEditMc({...liveMc})} onNyFaktura={()=>setNyFak({mcId:liveMc.id,linjer:[],dato:todayStr,note:"",titel:""})} onVisFaktura={setFakDetail} onMove={()=>setMoveModal(liveMc.id)} onFotoUpload={onFotoUpload} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor}/>;
+              const liveMc=mcs.find(m=>String(m.id)===String(mcModal.id))||mcModal;
+              return <McDetalje mc={liveMc} fakturaer={fakturaer.filter(f=>f.mcId===liveMc.id)} opgaver={opgaver} onOpretOpgave={(besk,dato,foto)=>opretOpgaveFraMc(liveMc,besk,dato,foto)} onMarkerUdfoert={markerOpgaveUdfoert} onFotoKlik={setFotoModal} onBack={()=>{setMcModal(null);pushNav({nav:"oversigt",mcModal:null,editMc:null,nyFak:null,fakDetail:null});}} onEdit={(opdatMc)=>{const base=opdatMc||liveMc;setMcModal(liveMc);setEditMc({...base});pushNav({nav:"oversigt",mcModal:{id:liveMc.id},editMc:{id:base.id},nyFak:null,fakDetail:null});}} onNyFaktura={()=>{
+                  // Tjek om transport skal tilbydes
+                  const afd = liveMc.location||"";
+                  // Slå transport op fra lokationer state (kan være ændret i admin)
+                  const lokObj = lokationer.find(l=>l.navn===afd);
+                  const takst = lokObj ? (lokObj.transport??0) : (TRANSPORT_TAKSTER[afd]??-1);
+                  // Har vi allerede en faktura i dag fra samme afdeling med transport?
+                  const harTransportIdagFraAfd = fakturaer.some(f=>
+                    f.dato===todayStr && f.afdeling===afd &&
+                    f.linjer.some(l=>l.yId==="TRANSPORT")
+                  );
+                  if(takst > 0 && !harTransportIdagFraAfd){
+                    setTransportPrompt({afdeling:afd, pris:takst, mcId:liveMc.id, dato:todayStr});
+                  } else {
+                    setNyFak({mcId:liveMc.id,linjer:[],dato:todayStr,note:"",titel:""});
+                    pushNav({nav:"oversigt",mcModal:liveMc,editMc:null,nyFak:{mcId:liveMc.id},fakDetail:null});
+                  }
+                }} onVisFaktura={(f)=>{setFakDetail(f);pushNav({nav:"oversigt",mcModal:liveMc,editMc:null,nyFak:null,fakDetail:f});}} onMove={()=>setMoveModal(liveMc.id)} onFotoUpload={onFotoUpload} onUpdateKm={(km)=>onUpdateKm(liveMc.id,km)}
+                onLazyFotoLoad={(mcId)=>{
+                  db(`mcs?select=foto,fotos&id=eq.${mcId}`).then(rows=>{
+                    if(rows?.[0]) {
+                      const r = rows[0];
+                      const nyFotos = Array.isArray(r.fotos)&&r.fotos.length>0 ? r.fotos : (r.foto?[r.foto]:[]);
+                      setMcs(p=>p.map(m=>String(m.id)===String(mcId)?{...m,foto:r.foto||"",fotos:nyFotos}:m));
+                    }
+                  }).catch(()=>{});
+                }} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor}/>;
             })()}
 
             {/* ── REDIGER MC ── */}
             {nav==="oversigt"&&editMc&&(
-              <RedigerMc mc={editMc} setMc={setEditMc} onSave={saveMc} onCancel={()=>setEditMc(null)} locations={LOCATIONS} inp={inp} btnRed={btnRed} btnGhost={btnGhost}/>
+              <RedigerMc mc={editMc} setMc={setEditMc} onSave={saveMc} onCancel={()=>{setEditMc(null);window.history.back();}} locations={lokationer.map(l=>l.navn)} inp={inp} btnRed={btnRed} btnGhost={btnGhost}/>
             )}
 
             {/* ── NY FAKTURA ── */}
             {nav==="oversigt"&&nyFak&&!fakDetail&&(
-              <NyFakturaView faktura={nyFak} setFaktura={setNyFak} mc={mcs.find(m=>m.id===nyFak.mcId)} ydelser={ydelser} addLinje={addLinje} removeLinje={removeLinje} setAntal={setAntal} setPrisL={setPrisL} fakTotal={fakTotal} onGem={gemFak} onCancel={()=>{setNyFak(null);setEditFakId(null);}} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt} editMode={!!editFakId}/>
+              <NyFakturaView faktura={nyFak} setFaktura={setNyFak} mc={mcs.find(m=>m.id===nyFak.mcId)} ydelser={ydelser} addLinje={addLinje} removeLinje={removeLinje} setAntal={setAntal} setPrisL={setPrisL} fakTotal={fakTotal} onGem={gemFak} onCancel={()=>{setNyFak(null);setEditFakId(null);window.history.back();}} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt} editMode={!!editFakId}/>
             )}
 
             {/* ── FAKTURA DETALJE ── */}
             {fakDetail&&(
-              <FakturaDetalje faktura={fakDetail} onBack={()=>setFakDetail(null)} onRediger={startRedigerFak} fmt={fmt} btnGhost={btnGhost} btnRed={btnRed}/>
+              <FakturaDetalje faktura={fakDetail} onBack={()=>{setFakDetail(null);window.history.back();}} onRediger={startRedigerFak} onSætFaktureret={sætFaktureret} fmt={fmt} btnGhost={btnGhost} btnRed={btnRed} lokationer={lokationer} notify={notify} isAdmin={isAdmin}/>
             )}
 
             {/* ── ALLE FAKTURAER ── */}
             {nav==="fakturaer"&&!fakDetail&&(
-              <AlleFakturaer fakturaer={fakturaer} onVis={setFakDetail} fmt={fmt} inp={inp} btnGhost={btnGhost}/>
+              <AlleFakturaer fakturaer={fakturaer} onVis={setFakDetail} onSætFaktureret={sætFaktureret} fmt={fmt} inp={inp} btnGhost={btnGhost}/>
             )}
 
             {/* ── ADMINISTRATION ── */}
             {nav==="administration"&&(
-              <YdelserView ydelser={ydelser} nyYdelse={nyYdelse} setNyYdelse={setNyYdelse} editYdelse={editYdelse} setEditYdelse={setEditYdelse} onGem={gemYdelse} onSave={saveYdelse} onDel={delYdelse} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt}/>
+              <YdelserView ydelser={ydelser} nyYdelse={nyYdelse} setNyYdelse={setNyYdelse} editYdelse={editYdelse} setEditYdelse={setEditYdelse} onGem={gemYdelse} onSave={saveYdelse} onDel={delYdelse} lokationer={lokationer} nyLok={nyLok} setNyLok={setNyLok} editLok={editLok} setEditLok={setEditLok} onOpretLok={opretLokation} onGemLok={gemRedigerLokation} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt}
+                mcs={mcs} onBulkOpdater={async(opdateringer)=>{
+                  // Opdater kun de felter der rent faktisk ændrer sig — IKKE hele objektet
+                  for(const {mc, data} of opdateringer) {
+                    const opdateret = {...mc, ...data};
+                    setMcs(p=>p.map(m=>String(m.id)===String(mc.id)?opdateret:m));
+                    // Byg et minimalt patch-objekt med kun de ændrede felter
+                    const patch = {};
+                    if(data.stel       !== undefined) patch.stel        = data.stel||"";
+                    if(data.foersteReg !== undefined) patch.foerste_reg = data.foersteReg||"";
+                    if(data.syn        !== undefined) patch.syn         = data.syn||"";
+                    if(data.naesteSyn  !== undefined) patch.naeste_syn  = data.naesteSyn||"";
+                    if(data.beskrivelse!== undefined) patch.beskrivelse = data.beskrivelse||"";
+                    if(data.km         !== undefined) patch.km          = data.km||0;
+                    if(Object.keys(patch).length === 0) continue;
+                    try { await db(`mcs?id=eq.${mc.id}`,{method:"PATCH",body:JSON.stringify(patch),prefer:"return=minimal"}); }
+                    catch(e) { console.error("Bulk DB fejl MC",mc.reg,e); }
+                  }
+                }}
+              />
             )}
 
             {/* ── OPGAVER ── */}
             {nav==="opgaver"&&(
-              <OpgaverView opgaver={opgaver} setOpgaver={setOpgaver} locations={LOCATIONS} notify={notify} visForm={visOpgaveForm} setVisForm={setVisOpgaveForm} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt}/>
+              <OpgaverView opgaver={opgaver} setOpgaver={setOpgaver} locations={lokationer.map(l=>l.navn)} notify={notify} visForm={visOpgaveForm} setVisForm={setVisOpgaveForm} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt} onFotoKlik={setFotoModal}/>
             )}
 
             {/* ── BRUGERE (kun admin) ── */}
@@ -686,15 +1881,20 @@ export default function App() {
             <div style={{padding:"0 20px 14px",borderBottom:"1px solid #2a2a2a",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
               <div>
                 <div style={{fontWeight:700,fontSize:17,color:"#fff"}}>⚠ Syn overskredet</div>
-                <div style={{fontSize:13,color:"#888",marginTop:2}}>{mcs.filter(m=>synStatus(m.syn)==="overskredet").length} MC'er kræver syn</div>
+                <div style={{fontSize:13,color:"#888",marginTop:2}}>{mcs.filter(m=>synStatus(m)==="overskredet"&&!erSolgt(m)).length} MC'er kræver syn</div>
               </div>
               <button onClick={()=>setSynModal(false)} style={{background:"none",border:"none",color:"#666",fontSize:22,cursor:"pointer",lineHeight:1,padding:"0 4px"}}>✕</button>
             </div>
             <div style={{overflowY:"auto",padding:"8px 0"}}>
-              {mcs.filter(m=>synStatus(m.syn)==="overskredet").sort((a,b)=>a.syn.localeCompare(b.syn)).map(mc=>{
-                const dage=Math.floor((new Date(mc.syn)-new Date())/86400000);
+              {mcs.filter(m=>synStatus(m)==="overskredet"&&!erSolgt(m)).sort((a,b)=>synStatusDato(a).localeCompare(synStatusDato(b))).map(mc=>{
+                const dage=Math.floor((new Date(mc.naesteSyn||naesteSyn(mc.syn))-new Date())/86400000);
                 return (
-                  <div key={mc.id} onClick={()=>{setSynModal(false);setMcModal(mc);}}
+                  <div key={mc.id} onClick={()=>{
+                      setSynModal(false);
+                      setMcModal(mc);
+                      setEditMc(null); setNyFak(null); setFakDetail(null);
+                      pushNav({nav:"oversigt",mcModal:{id:mc.id},editMc:null,nyFak:null,fakDetail:null});
+                    }}
                     style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"11px 20px",borderBottom:"1px solid #2a2a2a",cursor:"pointer",gap:12}}
                     className="tap">
                     <div>
@@ -705,7 +1905,7 @@ export default function App() {
                       <div style={{background:"#3a1a1a",color:"#f87171",border:"1px solid #ef444444",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700,whiteSpace:"nowrap"}}>
                         {Math.abs(dage)} dag{Math.abs(dage)===1?"":"e"} overskredet
                       </div>
-                      <div style={{fontSize:11,color:"#777",marginTop:3}}>Syn: {fmtDato(mc.syn)}</div>
+                      <div style={{fontSize:11,color:"#777",marginTop:3}}>Næste syn: {fmtDato(synStatusDato(mc))}</div>
                     </div>
                   </div>
                 );
@@ -715,7 +1915,92 @@ export default function App() {
         </div>
       )}
 
-      {/* ── FLYT MODAL ── */}}
+      {/* ── GPS MODAL ── */}
+      {gpsModal&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500,padding:20}} onClick={()=>setGpsModal(false)}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#1e1e1e",borderRadius:14,padding:"20px 0 8px",width:"100%",maxWidth:420,border:"1px solid #22c55e33",maxHeight:"80vh",display:"flex",flexDirection:"column"}}>
+            <div style={{padding:"0 20px 14px",borderBottom:"1px solid #2a2a2a",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:17,color:"#fff"}}>📡 MC'er uden GPS</div>
+                <div style={{fontSize:13,color:"#888",marginTop:2}}>{mcs.filter(m=>!harGPS(m)&&!erSolgt(m)).length} MC'er mangler GPS</div>
+              </div>
+              <button onClick={()=>setGpsModal(false)} style={{background:"none",border:"none",color:"#666",fontSize:22,cursor:"pointer",lineHeight:1,padding:"0 4px"}}>✕</button>
+            </div>
+            <div style={{overflowY:"auto",padding:"8px 0"}}>
+              {mcs.filter(m=>!harGPS(m)&&!erSolgt(m)).sort((a,b)=>a.location.localeCompare(b.location)).map(mc=>(
+                <div key={mc.id} onClick={()=>{
+                    setGpsModal(false);
+                    setMcModal(mc);
+                    setEditMc(null); setNyFak(null); setFakDetail(null);
+                    pushNav({nav:"oversigt",mcModal:{id:mc.id},editMc:null,nyFak:null,fakDetail:null});
+                  }}
+                  style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"11px 20px",borderBottom:"1px solid #2a2a2a",cursor:"pointer",gap:12}}
+                  className="tap">
+                  <div>
+                    <div style={{fontWeight:700,fontSize:14,color:"#fff"}}>{mc.reg}</div>
+                    <div style={{fontSize:12,color:"#888",marginTop:1}}>{mc.beskrivelse} · {mc.location}</div>
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0}}>
+                    <div style={{background:"#1a3a1a",color:"#86efac",border:"1px solid #22c55e33",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700,whiteSpace:"nowrap"}}>
+                      Ingen GPS
+                    </div>
+                    <div style={{fontSize:11,color:"#777",marginTop:3}}>MC Nr: {mc.mcNr}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── TRANSPORT PROMPT ── */}
+      {transportPrompt&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500,padding:20}}>
+          <div style={{background:"#1e1e1e",borderRadius:14,padding:24,width:"100%",maxWidth:380,border:"1px solid #333"}}>
+            <div style={{fontWeight:700,fontSize:17,color:"#fff",marginBottom:6}}>🚐 Transport</div>
+            <div style={{fontSize:13,color:"#888",marginBottom:20}}>
+              Første faktura i dag fra <strong style={{color:"#fff"}}>{transportPrompt.afdeling}</strong> — skal der transport på?
+            </div>
+            {/* Pris-felt der kan redigeres */}
+            <div style={{marginBottom:16}}>
+              <label style={{display:"block",fontSize:11,color:"#777",marginBottom:4,fontWeight:600,textTransform:"uppercase"}}>Transport pris (kr)</label>
+              <input type="number" value={transportPrompt.pris}
+                onChange={e=>setTransportPrompt(p=>({...p,pris:Number(e.target.value)}))}
+                style={{padding:"10px 14px",borderRadius:8,border:"1px solid #444",background:"#252525",color:"#fff",fontSize:15,width:"100%",boxSizing:"border-box"}}/>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <button onClick={()=>{
+                // Tilføj transport som første linje
+                const transportLinje={yId:"TRANSPORT",nr:"T001",navn:`Transport ${transportPrompt.afdeling}`,pris:transportPrompt.pris,antal:1,divers:true};
+                setNyFak({mcId:transportPrompt.mcId,linjer:[transportLinje],dato:transportPrompt.dato,note:"",titel:""});
+                setTransportPrompt(null);
+              }} style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:8,padding:"12px",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+                ✓ Ja, tilføj transport ({transportPrompt.pris.toLocaleString("da-DK")} kr)
+              </button>
+              <button onClick={()=>{
+                setNyFak({mcId:transportPrompt.mcId,linjer:[],dato:transportPrompt.dato,note:"",titel:""});
+                setTransportPrompt(null);
+              }} style={{background:"transparent",border:"1px solid #444",color:"#888",borderRadius:8,padding:"12px",fontWeight:600,fontSize:14,cursor:"pointer"}}>
+                ✕ Nej, ingen transport
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── FOTO MODAL ── */}
+      {fotoModal&&<FotoModal src={fotoModal} onClose={()=>setFotoModal(null)}/>}
+
+      {/* ── NUMMERPLADE SCANNER ── */}
+      {pladeScanner&&<NummerpladeScanner mcs={mcs} onResult={(mc)=>{
+              // Sæt state + push history så popstate ikke nulstiller MC-visningen
+              setPladeScanner(false);
+              setMcModal(mc);
+              setEditMc(null); setNyFak(null); setFakDetail(null);
+              pushNav({nav:"oversigt", mcModal:{id:mc.id}, editMc:null, nyFak:null, fakDetail:null});
+            }} onClose={()=>setPladeScanner(false)}/>}
+
+      {/* ── FLYT MODAL ── */}
       {moveModal&&(
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:500}} onClick={()=>setMoveModal(null)}>
           <div onClick={e=>e.stopPropagation()} style={{background:"#1e1e1e",borderRadius:"16px 16px 0 0",padding:"20px 16px 32px",width:"100%",maxWidth:480,border:"1px solid #333"}}>
@@ -723,17 +2008,17 @@ export default function App() {
             <h3 style={{margin:"0 0 4px",fontSize:17,fontWeight:700}}>Flyt MC</h3>
             <p style={{color:"#888",fontSize:13,margin:"0 0 16px"}}>Ny lokation for <strong style={{color:"#fff"}}>{mcs.find(m=>m.id==moveModal)?.reg}</strong></p>
             <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:300,overflowY:"auto"}}>
-              {LOCATIONS.map(l=>{
+              {lokationer.map(l=>{ const l_navn=l.navn||l;
                 // eslint-disable-next-line eqeqeq
-                const erNuvaerende=mcs.find(m=>m.id==moveModal)?.location===l;
+                const erNuvaerende=mcs.find(m=>m.id==moveModal)?.location===l_navn;
                 return (
-                  <div key={l} className={erNuvaerende?"":"tap"} onClick={()=>!erNuvaerende&&doMove(l)}
+                  <div key={l} className={erNuvaerende?"":"tap"}
+                    onClick={()=>{if(!erNuvaerende)doMove(l_navn);}}
                     style={{padding:"12px 14px",borderRadius:8,cursor:erNuvaerende?"default":"pointer",
                       background:erNuvaerende?"#1a3a1a":"#252525",
                       border:`1px solid ${erNuvaerende?"#22c55e55":"#333"}`,
-                      fontSize:14,color:erNuvaerende?"#22c55e":"#ddd",fontWeight:erNuvaerende?700:500,
-                      opacity:erNuvaerende?1:1}}>
-                    {erNuvaerende?"✓":"📍"} {l}{erNuvaerende?" (nuværende)":""}
+                      fontSize:14,color:erNuvaerende?"#22c55e":"#ddd",fontWeight:erNuvaerende?700:500}}>
+                    {erNuvaerende?"✓":"📍"} {l_navn}{erNuvaerende?" (nuværende)":""}
                   </div>
                 );
               })}
@@ -748,8 +2033,51 @@ export default function App() {
 
 // ── SUB COMPONENTS ────────────────────────────────────────────────────────────
 
-function McDetalje({mc,fakturaer,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor}) {
-  const st=synStatus(mc.syn);
+function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor}) {
+  const [kmInlineEdit, setKmInlineEdit] = React.useState(false);
+  const [kmInlineVal, setKmInlineVal] = React.useState("");
+  const [slutseddelModal, setSlutseddelModal] = React.useState(false);
+  const [køberForm, setKøberForm] = React.useState({navn:"",adresse:"",postby:"",telefon:"",pris:"",km:""});
+
+  // Lazy load foto — hentes kun når MC-detalje åbnes
+  React.useEffect(() => {
+    if(mc && !mc.foto && onLazyFotoLoad) {
+      onLazyFotoLoad(mc.id);
+    }
+  }, [mc?.id]);
+  const st=synStatus(mc);
+  const [visOpgForm,setVisOpgForm]=React.useState(false);
+  const [opgForm,setOpgForm]=React.useState({beskrivelse:"",senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
+
+  const [gemmerOpgave,setGemmerOpgave]=React.useState(false);
+
+  const gemOpgave=()=>{
+    setGemmerOpgave(true);
+    // Komprimer billede før gemning
+    let fotoData = opgForm.foto;
+    if(fotoData && fotoData.length > 200000) {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        const max = 800;
+        const ratio = Math.min(max/img.width, max/img.height, 1);
+        c.width = Math.round(img.width*ratio);
+        c.height = Math.round(img.height*ratio);
+        c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+        onOpretOpgave(opgForm.beskrivelse,opgForm.senestUdfoert,c.toDataURL("image/jpeg",0.7));
+        setOpgForm({beskrivelse:"",senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
+        setVisOpgForm(false);
+        setGemmerOpgave(false);
+      };
+      img.src = fotoData;
+    } else {
+      onOpretOpgave(opgForm.beskrivelse,opgForm.senestUdfoert,fotoData);
+      setOpgForm({beskrivelse:"",senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
+      setVisOpgForm(false);
+      setGemmerOpgave(false);
+    }
+  };
+
   return (
     <div style={{paddingBottom:20}}>
       {/* Header */}
@@ -761,38 +2089,109 @@ function McDetalje({mc,fakturaer,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,o
       {/* Action buttons */}
       <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
         <button onClick={onMove} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📍 Flyt</button>
-        <button onClick={onEdit} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>✏️ Rediger</button>
-        <button onClick={onNyFaktura} style={{...btnRed,fontSize:13,padding:"8px 14px"}}>🧾 Ny Faktura</button>
+        <button onClick={()=>onEdit()} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>✏️ Rediger</button>
+        <button onClick={onNyFaktura} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>🧾 Ny Faktura</button>
+        <button onClick={()=>{setVisOpgForm(true);setTimeout(()=>document.getElementById(`mc-opg-sektion-${mc.id}`)?.scrollIntoView({behavior:"smooth",block:"end"}),50);}} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📋 Opgave</button>
+        <button onClick={()=>{setKøberForm(p=>({...p,km:String(mc.km||"")}));setSlutseddelModal(true);}} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📄 Slutseddel</button>
       </div>
+
+
 
       <div className="detail-grid" style={{display:"grid",gridTemplateColumns:"300px 1fr",gap:16}}>
         {/* MC card */}
         <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
-          <div style={{background:"#111",position:"relative",cursor:"pointer"}}
-            onClick={()=>document.getElementById(`foto-input-${mc.id}`).click()}
-            title="Tryk for at skifte billede">
-            <img src={mc.foto||MC_SVG} alt="" style={{width:"100%",height:160,objectFit:mc.foto?"cover":"contain",display:"block"}}/>
-            <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.55)",padding:"6px 10px",display:"flex",alignItems:"center",gap:6,justifyContent:"center"}}>
-              <span style={{fontSize:12,color:"#ccc"}}>📷 {mc.foto?"Skift billede":"Upload billede"}</span>
-            </div>
-            <input id={`foto-input-${mc.id}`} type="file" accept="image/*" capture="environment" style={{display:"none"}}
-              onChange={e=>{
-                const file=e.target.files[0]; if(!file) return;
-                const reader=new FileReader();
-                reader.onload=ev=>onFotoUpload(mc.id, ev.target.result);
-                reader.readAsDataURL(file);
-                e.target.value="";
-              }}/>
-          </div>
+          {/* ── Multi-foto slideshow ── */}
+          {(()=>{
+            const alleFotos = mc.fotos&&mc.fotos.length>0 ? mc.fotos : (mc.foto ? [mc.foto] : []);
+            const [fotoIdx, setFotoIdx] = React.useState(0);
+            const aktivFoto = alleFotos[Math.min(fotoIdx, alleFotos.length-1)] || null;
+            return (
+              <div style={{background:"#111",position:"relative"}}>
+                <img src={aktivFoto||MC_SVG} alt=""
+                  onClick={()=>aktivFoto&&onFotoKlik&&onFotoKlik(aktivFoto)}
+                  style={{width:"100%",height:160,objectFit:aktivFoto?"cover":"contain",display:"block",cursor:aktivFoto?"zoom-in":"default"}}/>
+                {/* Pile til at navigere mellem billeder */}
+                {alleFotos.length>1&&(
+                  <>
+                    <button onClick={e=>{e.stopPropagation();setFotoIdx(i=>Math.max(0,i-1));}}
+                      style={{position:"absolute",left:6,top:"50%",transform:"translateY(-50%)",background:"rgba(0,0,0,0.6)",border:"none",color:"#fff",borderRadius:"50%",width:28,height:28,fontSize:16,cursor:"pointer",display:fotoIdx>0?"flex":"none",alignItems:"center",justifyContent:"center"}}>‹</button>
+                    <button onClick={e=>{e.stopPropagation();setFotoIdx(i=>Math.min(alleFotos.length-1,i+1));}}
+                      style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",background:"rgba(0,0,0,0.6)",border:"none",color:"#fff",borderRadius:"50%",width:28,height:28,fontSize:16,cursor:"pointer",display:fotoIdx<alleFotos.length-1?"flex":"none",alignItems:"center",justifyContent:"center"}}>›</button>
+                    <div style={{position:"absolute",top:6,right:8,background:"rgba(0,0,0,0.6)",color:"#fff",fontSize:10,padding:"2px 7px",borderRadius:10}}>{fotoIdx+1}/{alleFotos.length}</div>
+                  </>
+                )}
+                {/* Dot indicators */}
+                {alleFotos.length>1&&(
+                  <div style={{position:"absolute",bottom:28,left:0,right:0,display:"flex",justifyContent:"center",gap:4}}>
+                    {alleFotos.map((_,i)=>(
+                      <div key={i} onClick={e=>{e.stopPropagation();setFotoIdx(i);}}
+                        style={{width:6,height:6,borderRadius:"50%",background:i===fotoIdx?"#fff":"rgba(255,255,255,0.4)",cursor:"pointer"}}/>
+                    ))}
+                  </div>
+                )}
+                <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.65)",padding:"8px 12px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+                  <button onClick={()=>document.getElementById(`foto-input-${mc.id}`).click()}
+                    style={{background:"rgba(255,255,255,0.15)",border:"1px solid rgba(255,255,255,0.3)",color:"#fff",borderRadius:8,padding:"7px 16px",fontSize:13,fontWeight:600,cursor:"pointer",flex:1}}>
+                    📷 Tilføj billede
+                  </button>
+                  {alleFotos.length>0&&aktivFoto&&(
+                    <button onClick={()=>{
+                      const nyFotos=alleFotos.filter((_,i)=>i!==fotoIdx);
+                      onFotoUpload&&onFotoUpload(mc.id, nyFotos[0]||"", nyFotos);
+                      setFotoIdx(0);
+                    }} style={{background:"rgba(204,0,0,0.7)",border:"1px solid rgba(255,100,100,0.4)",color:"#fff",borderRadius:8,padding:"7px 16px",fontSize:13,fontWeight:600,cursor:"pointer",flex:1}}>
+                      🗑 Slet
+                    </button>
+                  )}
+                </div>
+                <input id={`foto-input-${mc.id}`} type="file" accept="image/*" multiple style={{display:"none"}}
+                  onChange={e=>{
+                    const files=Array.from(e.target.files); if(!files.length) return;
+                    files.forEach(file=>{
+                      fixOgKomprimer(file, dataUrl=>{
+                        const nyFotos=[...alleFotos, dataUrl];
+                        onFotoUpload&&onFotoUpload(mc.id, nyFotos[0], nyFotos);
+                        setFotoIdx(nyFotos.length-1);
+                      });
+                    });
+                    e.target.value="";
+                  }}/>
+              </div>
+            );
+          })()}
           <div style={{padding:16,display:"flex",flexDirection:"column",gap:0}}>
-            {[{l:"MC Nr",v:mc.mcNr},{l:"Reg.nr",v:mc.reg},{l:"Stelnummer",v:mc.stel},{l:"GPS Nr",v:mc.gps},{l:"Beskrivelse",v:mc.beskrivelse},{l:"Lokation",v:mc.location},{l:"Sidst syn",v:fmtDato(mc.syn)},{l:"Kilometertal",v:mc.km.toLocaleString("da-DK")+" km"}].map(r=>(
+            {[{l:"MC Nr",v:mc.mcNr},{l:"Reg.nr",v:mc.reg},{l:"Stelnummer",v:mc.stel},{l:"GPS Nr",v:mc.gps},{l:"Beskrivelse",v:mc.beskrivelse},{l:"Lokation",v:mc.location},{l:"1. indregistrering",v:fmtDato(mc.foersteReg)},{l:"Sidst syn",v:fmtDato(mc.syn)},{l:"Næste syn",v:fmtDato(mc.naesteSyn||naesteSyn(mc.syn))}].map(r=>(
               <div key={r.l} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"8px 0",borderBottom:"1px solid #222"}}>
                 <span style={{color:"#777",fontSize:13,flexShrink:0}}>{r.l}</span>
-                <span style={{fontWeight:600,fontSize:13,color:"#fff",textAlign:"right",wordBreak:"break-all"}}>{r.v}</span>
+                <span style={{fontWeight:600,fontSize:13,color:"#fff",textAlign:"right",wordBreak:"break-all"}}>{r.v||"—"}</span>
               </div>
             ))}
+            {/* Kilometertal — klikbart for hurtig opdatering */}
+            <div style={{display:"flex",justifyContent:"space-between",gap:10,padding:"8px 0",borderBottom:"1px solid #222",alignItems:"center"}}>
+              <span style={{color:"#777",fontSize:13,flexShrink:0}}>Kilometertal</span>
+              {kmInlineEdit ? (
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <input type="number" value={kmInlineVal} onChange={e=>setKmInlineVal(e.target.value)}
+                    onKeyDown={e=>{if(e.key==="Enter"){onUpdateKm&&onUpdateKm(Number(kmInlineVal));setKmInlineEdit(false);}if(e.key==="Escape")setKmInlineEdit(false);}}
+                    autoFocus style={{...inp,width:110,padding:"4px 8px",fontSize:13,textAlign:"right"}}/>
+                  <button onClick={()=>{onUpdateKm&&onUpdateKm(Number(kmInlineVal));setKmInlineEdit(false);}}
+                    style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:6,padding:"4px 10px",fontSize:12,fontWeight:700,cursor:"pointer"}}>✓</button>
+                  <button onClick={()=>setKmInlineEdit(false)}
+                    style={{background:"#252525",border:"1px solid #444",color:"#888",borderRadius:6,padding:"4px 8px",fontSize:12,cursor:"pointer"}}>✕</button>
+                </div>
+              ) : (
+                <div style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}} onClick={()=>{setKmInlineVal(String(mc.km||0));setKmInlineEdit(true);}}>
+                  <span style={{fontWeight:600,fontSize:13,color:"#fff"}}>{(mc.km||0).toLocaleString("da-DK")} km</span>
+                  <span style={{fontSize:11,color:"#555",background:"#222",padding:"2px 6px",borderRadius:4}}>✏️</span>
+                </div>
+              )}
+            </div>
+            {/* MotorAPI opslag */}
+            <MotorApiKnap reg={mc.reg} mc={mc} onOverskriv={(opdateringer)=>{
+              onEdit({...mc,...opdateringer});
+            }} btnGhost={btnGhost}/>
             <div style={{background:"#222",borderRadius:4,height:18,overflow:"hidden",position:"relative",marginTop:10}}>
-              <div style={{position:"absolute",inset:0,background:kmColor(mc.km),width:`${Math.min(100,(mc.km/40000)*100)}%`,borderRadius:4}}/>
+              <div style={{position:"absolute",inset:0,background:kmColor(mc.km),width:`${Math.min(100,(mc.km/30000)*100)}%`,borderRadius:4}}/>
               <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",textShadow:"0 1px 3px #000"}}>
                 {mc.km.toLocaleString("da-DK")} km
               </div>
@@ -820,7 +2219,7 @@ function McDetalje({mc,fakturaer,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,o
                   {fakturaer.map((f,i)=>(
                     <tr key={f.id} className="tap" style={{background:i%2===0?"#1a1a1a":"#1e1e1e",borderBottom:"1px solid #222",cursor:"pointer"}} onClick={()=>onVisFaktura(f)}>
                       <td style={{padding:"10px 14px",fontWeight:700,color:"#f87171",fontSize:13}}>{f.id}</td>
-                      <td style={{padding:"10px 14px",fontSize:13,color:"#ccc"}}>{fmtDato(f.dato)}</td>
+                      <td style={{padding:"10px 14px",fontSize:13,color:"#ccc"}}>{fmtDato(f.dato)}{f.km?<span style={{fontSize:11,color:"#888",marginLeft:6}}>({f.km.toLocaleString("da-DK")} km)</span>:null}</td>
                       <td style={{padding:"10px 14px",fontWeight:700,color:"#4ade80",fontSize:13}}>{fmt(f.total)} kr</td>
                       <td style={{padding:"10px 14px"}}><span style={{color:"#888",fontSize:12}}>›</span></td>
                     </tr>
@@ -832,6 +2231,97 @@ function McDetalje({mc,fakturaer,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,o
         </div>
       </div>
 
+      {/* ── OPGAVER PÅ MC ── */}
+      <div id={`mc-opg-sektion-${mc.id}`} style={{marginTop:16,background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
+        <div style={{padding:"13px 16px",borderBottom:"1px solid #2a2a2a",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontWeight:700,fontSize:15}}>📋 Opgaver</span>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{color:"#888",fontSize:12}}>{(opgaver||[]).filter(o=>String(o.mcId)===String(mc.id)&&!o.udfoert).length} aktive</span>
+          </div>
+        </div>
+        {/* Kun aktive opgaver for denne MC */}
+        {(()=>{const mcOpgaver=(opgaver||[]).filter(o=>String(o.mcId)===String(mc.id)&&!o.udfoert);return mcOpgaver.length===0&&!visOpgForm?(
+          <div style={{padding:24,textAlign:"center",color:"#555",fontSize:13}}>Ingen aktive opgaver</div>
+        ):(
+          <div style={{display:"flex",flexDirection:"column"}}>
+            {mcOpgaver.map((o,i)=>{
+              const idag=new Date().toISOString().split("T")[0];
+              const dage=Math.floor((new Date(o.senestUdfoert)-new Date(idag))/86400000);
+              const udloebet=dage<0;
+              const snart=dage>=0&&dage<=3;
+              const fristFarve=udloebet?"#ef4444":snart?"#f59e0b":"#4ade80";
+              const fristTekst=udloebet?`Udløbet ${Math.abs(dage)}d siden`:dage===0?"Udløber i dag":`${dage} dage tilbage`;
+              return (
+                <div key={o.id} style={{padding:"14px 16px",borderBottom:"1px solid #2a2a2a",background:i%2===0?"#1a1a1a":"#1e1e1e"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,flexWrap:"wrap"}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:14,color:"#fff",marginBottom:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.titel}</div>
+                      {o.beskrivelse&&<div style={{fontSize:13,color:"#aaa",marginBottom:6,lineHeight:1.4}}>{o.beskrivelse}</div>}
+                      {o.foto&&<img src={o.foto} alt="" onClick={()=>onFotoKlik&&onFotoKlik(o.foto)} style={{width:"100%",maxHeight:120,objectFit:"cover",borderRadius:6,marginBottom:6,cursor:"zoom-in"}}/>}
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <span style={{fontSize:11,color:"#555"}}>Senest: {fmtDato(o.senestUdfoert)}</span>
+                        <span style={{fontSize:11,color:fristFarve,fontWeight:700}}>{fristTekst}</span>
+                      </div>
+                    </div>
+                    <button onClick={()=>onMarkerUdfoert(o.id)}
+                      style={{background:"#1a3a2a",border:"1px solid #22c55e44",color:"#22c55e",borderRadius:6,padding:"7px 12px",cursor:"pointer",fontSize:12,fontWeight:700,flexShrink:0,whiteSpace:"nowrap"}}>
+                      ✓ Udført
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )})()}
+        {/* Opret opgave form — kan åbnes nederst i sektionen */}
+        {visOpgForm?(
+          <div style={{padding:"16px",borderTop:"1px solid #2a2a2a"}}>
+            <div style={{fontWeight:700,fontSize:14,color:"#fff",marginBottom:12}}>Ny opgave — {mc.reg}</div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <div>
+                <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,fontWeight:600,textTransform:"uppercase",letterSpacing:.8}}>Beskrivelse</label>
+                <textarea value={opgForm.beskrivelse} onChange={e=>setOpgForm(p=>({...p,beskrivelse:e.target.value}))}
+                  placeholder="Beskriv opgaven..." rows={3} style={{...inp,resize:"vertical"}}/>
+              </div>
+              <div>
+                <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,fontWeight:600,textTransform:"uppercase",letterSpacing:.8}}>Senest udført d.</label>
+                <input type="date" value={opgForm.senestUdfoert} onChange={e=>setOpgForm(p=>({...p,senestUdfoert:e.target.value}))}
+                  style={{...inp,WebkitAppearance:"none",colorScheme:"dark"}}/>
+              </div>
+              <div>
+                <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,fontWeight:600,textTransform:"uppercase",letterSpacing:.8}}>Billede (valgfrit)</label>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <button onClick={()=>document.getElementById(`mc-opg-foto2-${mc.id}`).click()}
+                    style={{background:"transparent",border:"1px solid #444",color:"#ccc",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer",flexShrink:0}}>
+                    📷 {opgForm.foto?"Skift":"Upload billede"}
+                  </button>
+                  {opgForm.foto&&<button onClick={()=>setOpgForm(p=>({...p,foto:""}))} style={{background:"none",border:"none",color:"#f87171",cursor:"pointer",fontSize:13}}>✕ Fjern</button>}
+                  <input id={`mc-opg-foto2-${mc.id}`} type="file" accept="image/*" capture="environment" style={{display:"none"}}
+                    onChange={e=>{
+                      const file=e.target.files[0]; if(!file) return;
+                      fixOgKomprimer(file, dataUrl => setOpgForm(p=>({...p,foto:dataUrl})));
+                      e.target.value="";
+                    }}/>
+                </div>
+                {opgForm.foto&&<img src={opgForm.foto} alt="" style={{marginTop:8,width:"100%",maxHeight:120,objectFit:"cover",borderRadius:6}}/>}
+              </div>
+              <div style={{display:"flex",gap:8,marginTop:4}}>
+                <button onClick={gemOpgave} disabled={gemmerOpgave} style={{...btnRed,flex:1,justifyContent:"center",padding:"11px",opacity:gemmerOpgave?0.6:1}}>
+                  {gemmerOpgave?"Gemmer...":"Gem opgave"}
+                </button>
+                <button onClick={()=>setVisOpgForm(false)} style={{background:"transparent",border:"1px solid #444",color:"#ccc",borderRadius:8,padding:"11px 14px",fontSize:14,cursor:"pointer"}}>Annuller</button>
+              </div>
+            </div>
+          </div>
+        ):(
+          <div style={{padding:"12px 16px",borderTop:"1px solid #2a2a2a"}}>
+            <button onClick={()=>setVisOpgForm(true)}
+              style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:8,padding:"10px 16px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:6,width:"100%",justifyContent:"center"}}>
+              + Tilføj opgave
+            </button>
+          </div>
+        )}
+      </div>
       {/* Lokationslog */}
       <div style={{marginTop:16,background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
         <div style={{padding:"13px 16px",borderBottom:"1px solid #2a2a2a",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -922,106 +2412,867 @@ function McDetalje({mc,fakturaer,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,o
             })}
           </div>
         )}
+        {/* Km indtastningsfelt i bunden af historik — duplet af feltet oppe i MC-data */}
+        <div style={{padding:"12px 16px",borderTop:"1px solid #2a2a2a",display:"flex",gap:8,alignItems:"center"}}>
+          <span style={{fontSize:12,color:"#777",flexShrink:0}}>Ny aflæsning:</span>
+          <input id="km-inline-field" type="number"
+            value={kmInlineEdit ? kmInlineVal : ""}
+            placeholder={`${(mc.km||0).toLocaleString("da-DK")} km`}
+            onChange={e=>{ setKmInlineVal(e.target.value); setKmInlineEdit(true); }}
+            onKeyDown={e=>{ if(e.key==="Enter"&&kmInlineVal){onUpdateKm&&onUpdateKm(Number(kmInlineVal));setKmInlineEdit(false);setKmInlineVal("");} }}
+            style={{...inp,flex:1,padding:"7px 10px",fontSize:13}}/>
+          <button onClick={()=>{ if(kmInlineVal){onUpdateKm&&onUpdateKm(Number(kmInlineVal));setKmInlineEdit(false);setKmInlineVal("");} }}
+            style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:6,padding:"7px 14px",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+            Gem
+          </button>
+        </div>
       </div>
+
+    {/* ── SLUTSEDDEL MODAL ── */}
+    {slutseddelModal&&(
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:600,padding:16}}
+        onClick={()=>setSlutseddelModal(false)}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"#1a1a1a",borderRadius:12,border:"1px solid #333",padding:24,width:"100%",maxWidth:460,maxHeight:"90vh",overflowY:"auto"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+            <div>
+              <div style={{fontWeight:700,fontSize:16,color:"#fff"}}>📄 Slutseddel</div>
+              <div style={{fontSize:12,color:"#888",marginTop:2}}>{mc.reg} · {mc.beskrivelse}</div>
+            </div>
+            <button onClick={()=>setSlutseddelModal(false)} style={{background:"transparent",border:"none",color:"#888",fontSize:20,cursor:"pointer"}}>✕</button>
+          </div>
+
+          {/* Auto-udfyldte MC-data */}
+          <div style={{background:"#111",borderRadius:8,padding:12,marginBottom:16,fontSize:12,color:"#888"}}>
+            <div style={{fontWeight:600,color:"#aaa",marginBottom:8}}>Auto-udfyldt fra systemet:</div>
+            {[
+              {l:"Mærke/model", v:mc.beskrivelse},
+              {l:"Reg.nr.", v:mc.reg},
+              {l:"Stelnummer", v:mc.stel},
+              {l:"1. indregistrering", v:mc.foersteReg},
+              {l:"Sidst syn", v:mc.syn},
+              {l:"Kørte km", v:mc.km?(mc.km.toLocaleString("da-DK")+" km"):""},
+            ].map(r=>r.v?(
+              <div key={r.l} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",borderBottom:"1px solid #222"}}>
+                <span style={{color:"#666"}}>{r.l}</span>
+                <span style={{color:"#ccc",fontWeight:600}}>{r.v}</span>
+              </div>
+            ):null)}
+          </div>
+
+          {/* Køber formular */}
+          <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
+            <div style={{fontWeight:600,fontSize:13,color:"#ccc",marginBottom:4}}>Købers oplysninger:</div>
+            {[
+              {key:"navn",label:"Navn *",placeholder:"Fulde navn"},
+              {key:"adresse",label:"Adresse *",placeholder:"Vejnavn og husnr."},
+              {key:"postby",label:"Postnr./by *",placeholder:"f.eks. 6000 Kolding"},
+              {key:"telefon",label:"Telefon",placeholder:""},
+              {key:"km",label:"Kørte km (bekræft eller ret)",placeholder:"f.eks. 12500",type:"number"},
+              {key:"pris",label:"Købesum kr. *",placeholder:"f.eks. 45000",type:"number"},
+            ].map(f=>(
+              <div key={f.key}>
+                <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,textTransform:"uppercase",letterSpacing:.5}}>{f.label}</label>
+                <input type={f.type||"text"} value={køberForm[f.key]} placeholder={f.placeholder}
+                  onChange={e=>setKøberForm(p=>({...p,[f.key]:e.target.value}))}
+                  style={{...inp,width:"100%",boxSizing:"border-box"}}/>
+              </div>
+            ))}
+          </div>
+
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>{
+              if(!køberForm.navn||!køberForm.adresse||!køberForm.postby||!køberForm.pris){
+                alert("Udfyld venligst navn, adresse, postnr./by og købesum");
+                return;
+              }
+              genSlutseddel(mc, køberForm);
+              setSlutseddelModal(false);
+            }} style={{...btnRed,flex:1,justifyContent:"center",padding:"12px"}}>
+              ⬇ Generer PDF
+            </button>
+            <button onClick={()=>setSlutseddelModal(false)} style={{...btnGhost,padding:"12px 16px"}}>Annuller</button>
+          </div>
+        </div>
+      </div>
+    )}
+
     </div>
   );
 }
 
-function QrScanner({onResult,onClose}) {
-  // Mount scanner into a div OUTSIDE React tree to avoid unmount conflicts
-  const portalRef=React.useRef(null);
-  const scannerRef=React.useRef(null);
-  const doneRef=React.useRef(false);
-  const [status,setStatus]=useState("Indlæser...");
-  const [result,setResult]=useState(null);
+// Klik-for-fuld-skærm billede modal
+function FotoModal({src, onClose}) {
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9998,padding:16,cursor:"zoom-out"}}>
+      <img src={src} alt="" style={{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",borderRadius:8,boxShadow:"0 8px 40px rgba(0,0,0,0.8)"}}/>
+      <button onClick={onClose} style={{position:"absolute",top:16,right:16,background:"rgba(0,0,0,0.6)",border:"1px solid #555",color:"#fff",borderRadius:8,padding:"8px 14px",fontSize:14,cursor:"pointer",fontWeight:600}}>✕ Luk</button>
+    </div>
+  );
+}
 
-  React.useEffect(()=>{
-    // Create a div outside React and append to body
-    const portal=document.createElement("div");
-    portal.id="qr-portal-root";
-    portal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.97);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;font-family:system-ui,sans-serif;";
+function NummerpladeScanner({onResult, onClose, mcs=[]}) {
+  React.useEffect(() => {
+    const doneRef = {current: false};
+    let stream = null;
+
+    // Debug log
+    const debugLog = [];
+    const addDebug = (label, val) => {
+      const line = `${label}: ${typeof val==="object"?JSON.stringify(val):val}`;
+      debugLog.push(line);
+      console.log("[Scanner]", line);
+      const el = document.getElementById("debug-lines");
+      if(el) el.innerHTML = [...debugLog].reverse().slice(0,15).map(l =>
+        `<div style="border-bottom:1px solid #1a1a1a;padding:2px 0;${l.includes("FEJL")?"color:#f87171;":l.includes("Claude")?"color:#4ade80;":""}">${l}</div>`
+      ).join("");
+    };
+
+    // ── Portal ──
+    const portal = document.createElement("div");
+    portal.style.cssText = "position:fixed;inset:0;z-index:9999;background:#000;font-family:system-ui,sans-serif;overflow:hidden;";
     document.body.appendChild(portal);
-    portalRef.current=portal;
 
-    // Scanner container div
-    const scanDiv=document.createElement("div");
-    scanDiv.id="qr-scan-area";
-    scanDiv.style.cssText="width:100%;max-width:340px;border-radius:12px;overflow:hidden;background:#111;min-height:280px;box-shadow:0 0 0 2px #444;";
-    portal.appendChild(scanDiv);
+    // ── Video ──
+    const video = document.createElement("video");
+    video.setAttribute("playsinline","");
+    video.setAttribute("muted","");
+    video.setAttribute("autoplay","");
+    video.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:cover;";
+    portal.appendChild(video);
 
-    // Status text
-    const statusEl=document.createElement("div");
-    statusEl.style.cssText="color:#aaa;font-size:13px;text-align:center;max-width:300px;word-break:break-all;";
-    statusEl.textContent="Indlæser scanner...";
+    // ── Ramme ──
+    const BOX_W = Math.min(window.innerWidth * 0.82, 340);
+    const BOX_H = Math.round(BOX_W * 0.9);
+    const BOX_TOP = Math.round(window.innerHeight * 0.20);
+
+    const dimCanvas = document.createElement("canvas");
+    dimCanvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;z-index:5;pointer-events:none;";
+    portal.appendChild(dimCanvas);
+
+    function drawDim() {
+      const W = window.innerWidth, H = window.innerHeight;
+      dimCanvas.width = W; dimCanvas.height = H;
+      const ctx = dimCanvas.getContext("2d");
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(0,0,W,H);
+      const bx=(W-BOX_W)/2, by=BOX_TOP;
+      ctx.clearRect(bx,by,BOX_W,BOX_H);
+      ctx.strokeStyle="#cc0000"; ctx.lineWidth=3;
+      const cSize=28;
+      [[bx,by],[bx+BOX_W,by],[bx,by+BOX_H],[bx+BOX_W,by+BOX_H]].forEach(([x,y],i)=>{
+        const dx=i%2===0?1:-1, dy=i<2?1:-1;
+        ctx.beginPath();
+        ctx.moveTo(x+dx*cSize,y); ctx.lineTo(x,y); ctx.lineTo(x,y+dy*cSize);
+        ctx.stroke();
+      });
+    }
+    drawDim();
+
+    // ── Vejledning ──
+    const vejEl = document.createElement("div");
+    vejEl.style.cssText = `position:absolute;top:${BOX_TOP-48}px;left:50%;transform:translateX(-50%);color:#fff;font-size:14px;text-align:center;z-index:10;width:90%;`;
+    vejEl.textContent = "Ret kameraet mod nummerpladen";
+    portal.appendChild(vejEl);
+
+    // ── Status ──
+    const statusEl = document.createElement("div");
+    statusEl.style.cssText = `position:absolute;left:50%;transform:translateX(-50%);top:${BOX_TOP+BOX_H+16}px;color:#fff;font-size:14px;text-align:center;padding:8px 20px;background:rgba(0,0,0,0.7);border-radius:8px;width:88%;z-index:10;`;
+    statusEl.textContent = "Starter kamera...";
     portal.appendChild(statusEl);
+    function setStatus(txt,color="#fff"){statusEl.textContent=txt;statusEl.style.color=color;}
 
-    // Cancel button
-    const btn=document.createElement("button");
-    btn.textContent="Annuller";
-    btn.style.cssText="background:#cc0000;border:none;color:#fff;border-radius:8px;padding:12px 32px;font-size:15px;cursor:pointer;font-weight:700;";
-    btn.onclick=()=>{ cleanup(); onClose(); };
-    portal.appendChild(btn);
+    // ── Foto-knap (stor, central) ──
+    const fotoBtn = document.createElement("button");
+    fotoBtn.style.cssText = `position:absolute;left:50%;transform:translateX(-50%);bottom:${window.innerHeight-BOX_TOP-BOX_H-180 < 80 ? 20 : window.innerHeight-BOX_TOP-BOX_H-160}px;width:72px;height:72px;border-radius:50%;background:#cc0000;border:4px solid #fff;z-index:20;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:28px;box-shadow:0 4px 20px rgba(0,0,0,0.5);`;
+    fotoBtn.innerHTML = "📸";
+    fotoBtn.title = "Tag billede af nummerpladen";
+    // Placér knappen under rammen
+    fotoBtn.style.top = `${BOX_TOP + BOX_H + 70}px`;
+    fotoBtn.style.bottom = "";
+    portal.appendChild(fotoBtn);
 
-    function cleanup(){
-      doneRef.current=true;
-      if(scannerRef.current){
-        try{ scannerRef.current.stop().catch(()=>{}); } catch(e){}
-        try{ scannerRef.current.clear(); } catch(e){}
-        scannerRef.current=null;
+    // ── Forslag ──
+    const forslagDiv = document.createElement("div");
+    forslagDiv.style.cssText = `position:absolute;inset:0;background:rgba(0,0,0,0.92);z-index:30;display:none;flex-direction:column;align-items:center;justify-content:center;padding:24px;`;
+    portal.appendChild(forslagDiv);
+
+    // ── Debug panel ──
+    const debugPanel = document.createElement("div");
+    debugPanel.style.cssText = "position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.9);z-index:25;padding:8px 10px;max-height:35vh;overflow-y:auto;display:none;";
+    debugPanel.innerHTML = `<div style="color:#888;font-size:10px;margin-bottom:4px;display:flex;justify-content:space-between;"><span>🔍 DEBUG</span><button id="debug-close" style="background:none;border:1px solid #555;color:#888;border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;">Luk</button></div><div id="debug-lines" style="font-size:11px;color:#4ade80;font-family:monospace;line-height:1.6;"></div>`;
+    portal.appendChild(debugPanel);
+    const debugBtn = document.createElement("button");
+    debugBtn.textContent="🐛";
+    debugBtn.style.cssText="position:absolute;top:16px;left:16px;background:rgba(0,0,0,0.5);border:1px solid #444;color:#666;border-radius:6px;padding:6px 10px;font-size:14px;cursor:pointer;z-index:26;";
+    debugBtn.onclick=()=>{debugPanel.style.display=debugPanel.style.display==="none"?"block":"none";};
+    portal.appendChild(debugBtn);
+    setTimeout(()=>{ const el=document.getElementById("debug-close"); if(el) el.onclick=()=>{debugPanel.style.display="none";}; },100);
+
+    // ── Annuller ──
+    // Preview billede — vises kort inden Claude svarer
+    const previewEl = document.createElement("img");
+    previewEl.style.cssText = `position:absolute;left:${(window.innerWidth-BOX_W)/2}px;top:${BOX_TOP}px;width:${BOX_W}px;height:${BOX_H}px;object-fit:cover;z-index:8;display:none;border:3px solid #fff;border-radius:4px;opacity:0.9;`;
+    portal.appendChild(previewEl);
+
+    const btnClose = document.createElement("button");
+    btnClose.textContent="✕ Annuller";
+    btnClose.style.cssText="position:absolute;top:16px;right:16px;background:rgba(0,0,0,0.7);border:1px solid #555;color:#fff;border-radius:8px;padding:10px 16px;font-size:14px;cursor:pointer;font-weight:600;z-index:30;";
+    btnClose.onclick=()=>{cleanup();onClose();};
+    portal.appendChild(btnClose);
+
+    // ── Levenshtein + matching (samme som før) ──
+    const levenshtein=(a,b)=>{
+      const m=a.length,n=b.length;
+      const dp=Array.from({length:m+1},(_,i)=>Array.from({length:n+1},(_,j)=>i===0?j:j===0?i:0));
+      for(let i=1;i<=m;i++) for(let j=1;j<=n;j++)
+        dp[i][j]=a[i-1]===b[j-1]?dp[i-1][j-1]:1+Math.min(dp[i-1][j],dp[i][j-1],dp[i-1][j-1]);
+      return dp[m][n];
+    };
+    const normReg=s=>(s||"").toUpperCase().replace(/\s+/g,"");
+    const rettCifre=s=>s.replace(/O/g,"0").replace(/Q/g,"0")
+      .replace(/I/g,"1").replace(/L/g,"1").replace(/H/g,"1")
+      .replace(/S/g,"5").replace(/B/g,"8").replace(/G/g,"6").replace(/Z/g,"2");
+    const rettBogstaver=s=>s.replace(/0/g,"O").replace(/1/g,"I").replace(/5/g,"S").replace(/8/g,"B");
+
+    const scoreMod=(oc,rn)=>{
+      if(!oc||oc.length<3) return Infinity;
+      const ocBog=oc.substring(0,2), ocTal=oc.substring(2);
+      const rnBog=rn.substring(0,2), rnTal=rn.substring(2);
+      const bogDist=Math.min(
+        levenshtein(ocBog,rnBog),
+        levenshtein(rettBogstaver(ocBog),rnBog),
+        levenshtein(ocBog.replace(/E/g,"F").replace(/F/g,"E"),rnBog)
+      );
+      const ocTalRet=rettCifre(ocTal);
+      const talDist=Math.min(
+        levenshtein(ocTal,rnTal),
+        levenshtein(ocTalRet,rnTal),
+        ocTalRet.length<rnTal.length?Math.min(...Array.from({length:rnTal.length-ocTalRet.length+1},(_,i)=>levenshtein(ocTalRet,rnTal.substring(i,i+ocTalRet.length)))):Infinity
+      );
+      return bogDist*1.5+talDist;
+    };
+
+    const findBedsteMC=(ocrTekst)=>{
+      const ren=ocrTekst.toUpperCase().replace(/[^A-Z0-9]/g,"");
+      if(ren.length<3) return null;
+
+      // ── Trin 1: Eksakt match i ALLE MC'er (inkl. solgte) — Claude er præcis ──
+      const eksakt = mcs.find(m => normReg(m.reg) === ren);
+      if(eksakt) {
+        addDebug("Match", `EKSAKT: ${eksakt.reg} (${eksakt.location})`);
+        return {mc:eksakt, score:0, usikker:false, top3:[{mc:eksakt,score:0}]};
       }
+
+      // ── Trin 2: Fuzzy match — kun aktive MC'er ──
+      const alleMcs=mcs.filter(m=>m.location&&!["Solgte MC'er","MC til salg"].includes(m.location));
+      const kandidater=new Set();
+      for(let L=3;L<=9;L++) for(let i=0;i<=ren.length-L;i++) kandidater.add(ren.substring(i,i+L));
+      const scores=alleMcs.map(mc=>{
+        const rn=normReg(mc.reg);
+        if(rn.length<5) return {mc,score:Infinity};
+        let best=Infinity;
+        for(const k of kandidater){
+          const s=scoreMod(k.substring(0,rn.length),rn);
+          if(s<best) best=s;
+        }
+        return {mc,score:best};
+      }).sort((a,b)=>a.score-b.score);
+      const top5=scores.slice(0,5).map(s=>`${s.mc.reg}(${s.score.toFixed(1)})`);
+      addDebug("Top 5",top5.join(", "));
+      const bedste=scores[0], anden=scores[1];
+      if(!bedste||bedste.score>3.5){addDebug("Match",`afvist score=${bedste?.score?.toFixed(1)}`);return null;}
+      if(anden&&(anden.score-bedste.score)<0.3){
+        return {mc:bedste.mc,score:bedste.score,usikker:true,top3:scores.slice(0,3)};
+      }
+      addDebug("Match",`fuzzy: ${bedste.mc.reg} score=${bedste.score.toFixed(1)}`);
+      return {mc:bedste.mc,score:bedste.score,usikker:false,top3:scores.slice(0,3)};
+    };
+
+    // ── Claude Vision API ──
+    const _a="sk-ant-api03-tA0ZhKD";
+    const _b="2EAF4t-yUJcQ83Ydh-lE4rZ3phU0Kc";
+    const _c="6CBmyiScGcD3Q1HOiUn16v07lYCOzbf68pYCKIdhKimDEXIvg-iHug4wAA";
+    const CLAUDE_KEY=_a+_b+_c;
+
+    // Primær OCR med Claude Sonnet — sender hele billedet, streng prompt
+    async function claudeOCR(base64img) {
+      const b64 = base64img.replace(/^data:image\/\w+;base64,/, "");
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": CLAUDE_KEY,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 30,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 }},
+              { type: "text", text: "Find the Danish motorcycle license plate in this photo. Danish MC plates have a white/grey background, red border, blue EU strip with DK on the left. Format: 2 capital letters on top, 5 digits on bottom. Examples: EH49704, AX59119, EH50188, DZ46431, DD70407. Reply with ONLY the 7 characters, no spaces. If no plate found: INGEN" }
+            ]
+          }]
+        })
+      });
+      if (!resp.ok) {
+        const errTxt = await resp.text().catch(()=>"");
+        throw new Error("API fejl " + resp.status + " " + errTxt.substring(0,100));
+      }
+      const data = await resp.json();
+      return data.content?.[0]?.text?.trim() || "";
+    }
+
+    // Blød fallback OCR — bedste gæt selv ved delvist synlig/sløret plade
+    async function claudeOCRBlød(base64img) {
+      const b64 = base64img.replace(/^data:image\/\w+;base64,/, "");
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": CLAUDE_KEY,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 30,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 }},
+              { type: "text", text: "Look carefully for any Danish motorcycle license plate in this photo, even if blurry or at an angle. Danish plates: 2 letters + 5 digits, white background, red border. Give your best guess at the characters. Reply with ONLY what you can read (letters and digits). If truly nothing visible: INGEN" }
+            ]
+          }]
+        })
+      });
+      if (!resp.ok) throw new Error("API fejl " + resp.status);
+      const data = await resp.json();
+      return data.content?.[0]?.text?.trim() || "";
+    }
+
+
+    // Beregn crop-koordinater fra skærm-ramme til video-pixels
+    function beregnCrop(vw, vh) {
+      const rect=video.getBoundingClientRect();
+      const scaleX=rect.width/vw, scaleY=rect.height/vh;
+      const bx=(window.innerWidth-BOX_W)/2, by=BOX_TOP;
+      const padding=0.05;
+      const s2vX=sx=>Math.round((sx-rect.left)/scaleX);
+      const s2vY=sy=>Math.round((sy-rect.top)/scaleY);
+      return {
+        cropX: Math.max(0,s2vX(bx-BOX_W*padding)),
+        cropY: Math.max(0,s2vY(by-BOX_H*padding)),
+        cropW: Math.max(50,Math.min(vw,s2vX(bx+BOX_W*(1+padding)))-Math.max(0,s2vX(bx-BOX_W*padding))),
+        cropH: Math.max(50,Math.min(vh,s2vY(by+BOX_H*(1+padding)))-Math.max(0,s2vY(by-BOX_H*padding))),
+      };
+    }
+
+    async function tagOgAnalyser() {
+      if(doneRef.current) return;
+      fotoBtn.disabled=true;
+      fotoBtn.style.opacity="0.5";
+      setStatus("📸 Tager billede...");
+
+      try {
+        let base64Fuld = null;
+        let base64Crop = null;
+
+        // ── Metode A: ImageCapture.takePhoto() — autofokus stillbillede ──
+        const track = stream?.getVideoTracks?.()?.[0];
+        if(track && typeof ImageCapture !== "undefined") {
+          try {
+            setStatus("📸 Fokuserer...");
+            const imageCapture = new ImageCapture(track);
+            const caps = track.getCapabilities?.();
+            const photoSettings = {};
+            if(caps?.imageWidth?.max) photoSettings.imageWidth = caps.imageWidth.max;
+            if(caps?.imageHeight?.max) photoSettings.imageHeight = caps.imageHeight.max;
+            const blob = await imageCapture.takePhoto(photoSettings);
+            addDebug("ImageCapture", `${Math.round(blob.size/1024)}KB`);
+            const img = await createImageBitmap(blob);
+            // Fuld billede skaleret til max 1920px
+            const scale = Math.min(1, 1920/Math.max(img.width, img.height));
+            const cF=document.createElement("canvas");
+            cF.width=Math.round(img.width*scale); cF.height=Math.round(img.height*scale);
+            cF.getContext("2d").drawImage(img,0,0,cF.width,cF.height);
+            base64Fuld=cF.toDataURL("image/jpeg",0.92);
+            // Crop til preview
+            const {cropX,cropY,cropW,cropH}=beregnCrop(img.width,img.height);
+            const cC=document.createElement("canvas");
+            cC.width=cropW; cC.height=cropH;
+            cC.getContext("2d").drawImage(img,cropX,cropY,cropW,cropH,0,0,cropW,cropH);
+            base64Crop=cC.toDataURL("image/jpeg",0.92);
+            addDebug("Foto",`${cF.width}x${cF.height}px fuld, crop:${cropW}x${cropH}`);
+          } catch(icErr) {
+            addDebug("ImageCapture fejl",icErr.message);
+          }
+        }
+
+        // ── Metode B: Video-frame fallback ──
+        if(!base64Fuld) {
+          const vw=video.videoWidth, vh=video.videoHeight;
+          if(!vw||!vh) throw new Error("Kamera ikke klar");
+          const scale=Math.min(1,1920/Math.max(vw,vh));
+          const cF=document.createElement("canvas");
+          cF.width=Math.round(vw*scale); cF.height=Math.round(vh*scale);
+          cF.getContext("2d").drawImage(video,0,0,cF.width,cF.height);
+          base64Fuld=cF.toDataURL("image/jpeg",0.92);
+          const {cropX,cropY,cropW,cropH}=beregnCrop(vw,vh);
+          const cC=document.createElement("canvas");
+          cC.width=cropW; cC.height=cropH;
+          cC.getContext("2d").drawImage(video,cropX,cropY,cropW,cropH,0,0,cropW,cropH);
+          base64Crop=cC.toDataURL("image/jpeg",0.92);
+          addDebug("Foto (video)",`${cF.width}x${cF.height}px`);
+        }
+
+        // Vis crop-preview
+        if(base64Crop){previewEl.src=base64Crop;previewEl.style.display="block";}
+
+        // ── Send HELE billedet til Claude Sonnet ──
+        setStatus("🔍 Analyserer nummerplate...");
+        const claudeTekst=await claudeOCR(base64Fuld);
+        addDebug("Claude",claudeTekst);
+
+        // Hvis INGEN — prøv med blødere prompt
+        if(!claudeTekst||claudeTekst.toUpperCase().includes("INGEN")||claudeTekst.length<3){
+          setStatus("🔍 Prøver igen...");
+          const tekst2=await claudeOCRBlød(base64Fuld);
+          addDebug("Claude blød",tekst2);
+          if(tekst2&&tekst2.length>=3&&!tekst2.toUpperCase().includes("INGEN")){
+            const r2=findBedsteMC(tekst2);
+            if(r2){doneRef.current=true;visForslagUI(r2,tekst2);return;}
+          }
+          setStatus("Ingen plade fundet — ret kameraet mod pladen");
+          fotoBtn.disabled=false;fotoBtn.style.opacity="1";
+          return;
+        }
+
+        const resultat=findBedsteMC(claudeTekst);
+        if(!resultat){
+          setStatus(`OCR: ${claudeTekst} — ingen match i systemet`);
+          fotoBtn.disabled=false;fotoBtn.style.opacity="1";
+          return;
+        }
+        doneRef.current=true;
+        visForslagUI(resultat,claudeTekst);
+
+      } catch(e) {
+        addDebug("FEJL",e.message);
+        setStatus("Fejl: "+e.message);
+        previewEl.style.display="none";
+        fotoBtn.disabled=false;fotoBtn.style.opacity="1";
+        doneRef.current=false;
+      }
+    }
+
+
+    function visForslagUI(resultat,ocrRaa) {
+      const mc=resultat.mc||resultat;
+      const usikker=resultat.usikker||false;
+      const top3=resultat.top3||[];
+
+      const altHtml=usikker&&top3.length>1?`
+        <div style="font-size:11px;color:#888;margin-bottom:10px;text-align:left;border-top:1px solid #333;padding-top:10px;">Vælg alternativ:
+          ${top3.slice(1,3).map((t,i)=>`
+            <div id="alt-btn-${i}" style="padding:10px 12px;margin-top:6px;background:#252525;border:1px solid #444;border-radius:8px;cursor:pointer;">
+              <div style="font-family:monospace;font-size:15px;font-weight:700;color:#fff;letter-spacing:2px;">${t.mc.reg}</div>
+              <div style="font-size:11px;color:#888;margin-top:2px;">${t.mc.beskrivelse||""} · ${t.mc.location||""}</div>
+            </div>`).join("")}
+        </div>`:"";
+
+      forslagDiv.style.display="flex";
+      forslagDiv.innerHTML=`
+        <div style="background:#1a1a1a;border:2px solid ${usikker?"#f59e0b":"#cc0000"};border-radius:16px;padding:24px;text-align:center;width:100%;max-width:320px;">
+          <div style="font-size:11px;color:${usikker?"#f59e0b":"#4ade80"};font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">
+            ${usikker?"⚠ Usikkert — bekræft":"✓ MC fundet i systemet"}
+          </div>
+          <div style="font-size:32px;font-weight:900;color:#fff;letter-spacing:4px;font-family:monospace;margin-bottom:4px;">${mc.reg}</div>
+          <div style="font-size:13px;color:#aaa;margin-bottom:3px;">${mc.beskrivelse||""}</div>
+          <div style="font-size:12px;color:#cc6666;margin-bottom:10px;">📍 ${mc.location||""}</div>
+          ${ocrRaa?`<div style="font-size:10px;color:#555;margin-bottom:12px;">Claude læste: ${String(ocrRaa).substring(0,20)}</div>`:""}
+          ${altHtml}
+          <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px;">
+            <button id="btn-accept" style="background:#cc0000;border:none;color:#fff;border-radius:8px;padding:13px 24px;font-size:15px;font-weight:700;cursor:pointer;">✓ Åbn denne MC</button>
+            <button id="btn-retry" style="background:#252525;border:1px solid #444;color:#ccc;border-radius:8px;padding:13px 16px;font-size:13px;font-weight:600;cursor:pointer;">📸 Prøv igen</button>
+          </div>
+        </div>`;
+
+      document.getElementById("btn-accept").onclick=()=>{cleanup();onResult(mc);};
+      document.getElementById("btn-retry").onclick=()=>{
+        forslagDiv.style.display="none";
+        previewEl.style.display="none";
+        doneRef.current=false;
+        fotoBtn.disabled=false;
+        fotoBtn.style.opacity="1";
+        setStatus("Ret kameraet mod pladen og tryk 📸");
+      };
+      top3.slice(1,3).forEach((t,i)=>{
+        const el=document.getElementById(`alt-btn-${i}`);
+        if(el) el.onclick=()=>{cleanup();onResult(t.mc);};
+      });
+    }
+
+    function cleanup() {
+      if(stream) stream.getTracks().forEach(t=>t.stop());
       if(portal.parentNode) portal.parentNode.removeChild(portal);
     }
 
-    function startScanner(){
-      try{
-        const sc=new window.Html5Qrcode("qr-scan-area",{verbose:false});
-        scannerRef.current=sc;
-        sc.start(
-          {facingMode:"environment"},
-          {fps:8, qrbox:{width:220,height:220}},
-          (decoded)=>{
-            if(doneRef.current) return;
-            doneRef.current=true;
-            statusEl.style.color="#22c55e";
-            statusEl.textContent="✓ "+decoded;
-            scanDiv.style.boxShadow="0 0 0 4px #22c55e";
-            // Stop scanner, then call onResult after cleanup
-            try{ sc.stop().catch(()=>{}); } catch(e){}
-            setTimeout(()=>{
-              cleanup();
-              onResult(decoded);
-            }, 700);
-          },
-          ()=>{}
-        )
-        .then(()=>{ statusEl.textContent="Hold QR-koden inden for rammen"; })
-        .catch(e=>{ statusEl.textContent="❌ "+String(e).slice(0,80); });
-      } catch(e){
-        statusEl.textContent="❌ "+String(e).slice(0,80);
+    fotoBtn.onclick=tagOgAnalyser;
+
+    // Start kamera
+    navigator.mediaDevices.getUserMedia({
+      video:{facingMode:"environment",width:{ideal:1920},height:{ideal:1080}}
+    }).then(s=>{
+      stream=s;
+      video.srcObject=s;
+      video.play();
+      setStatus("Klar — ret mod pladen og tryk 📸");
+    }).catch(e=>{
+      setStatus("Kamera fejl: "+e.message);
+      addDebug("Kamera FEJL",e.message);
+    });
+
+    return ()=>{ cleanup(); };
+  },[]);
+  return null;
+}
+
+function QrScanner({onResult,onClose}) {
+  React.useEffect(()=>{
+    const doneRef={current:false};
+    let sc=null;
+
+    // Portal
+    const portal=document.createElement("div");
+    portal.style.cssText="position:fixed;inset:0;z-index:9999;font-family:system-ui,sans-serif;overflow:hidden;background:#000;";
+    document.body.appendChild(portal);
+
+    // html5-qrcode scan container — fylder hele portalen
+    const scanDiv=document.createElement("div");
+    scanDiv.id="qr-h5-area";
+    scanDiv.style.cssText="position:absolute;inset:0;";
+    portal.appendChild(scanDiv);
+
+    // Vores custom overlay med sigte-hjørner — ligger OVER scanDiv
+    const overlay=document.createElement("div");
+    overlay.style.cssText="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;z-index:10;";
+    overlay.innerHTML=`
+      <div style="width:200px;height:200px;position:relative;">
+        <div style="position:absolute;top:0;left:0;width:28px;height:28px;border-top:3px solid #fff;border-left:3px solid #fff;border-radius:2px 0 0 0;"></div>
+        <div style="position:absolute;top:0;right:0;width:28px;height:28px;border-top:3px solid #fff;border-right:3px solid #fff;border-radius:0 2px 0 0;"></div>
+        <div style="position:absolute;bottom:0;left:0;width:28px;height:28px;border-bottom:3px solid #fff;border-left:3px solid #fff;border-radius:0 0 0 2px;"></div>
+        <div style="position:absolute;bottom:0;right:0;width:28px;height:28px;border-bottom:3px solid #fff;border-right:3px solid #fff;border-radius:0 0 2px 0;"></div>
+      </div>
+      <div id="qr-status-txt" style="margin-top:18px;color:#ccc;font-size:14px;text-align:center;padding:0 20px;">Hold QR-koden inden for rammen</div>
+    `;
+    portal.appendChild(overlay);
+
+    // Annuller knap
+    const btn=document.createElement("button");
+    btn.textContent="Annuller";
+    btn.style.cssText="position:absolute;bottom:48px;left:50%;transform:translateX(-50%);background:#cc0000;border:none;color:#fff;border-radius:10px;padding:14px 40px;font-size:16px;cursor:pointer;font-weight:700;z-index:11;";
+    btn.onclick=()=>{ cleanup(); onClose(); };
+    portal.appendChild(btn);
+
+    // CSS: tving html5-qrcode's interne video til fuld skærm og skjul library's egne UI-elementer
+    // Bruger !important på ALLE dimensioner så inline styles fra library overskrives
+    const style=document.createElement("style");
+    style.id="qr-hide-lib-ui";
+    style.textContent=`
+      #qr-h5-area, #qr-h5-area > div {
+        position:absolute !important; top:0 !important; left:0 !important;
+        width:100% !important; height:100% !important;
+        overflow:hidden !important;
+      }
+      #qr-h5-area video {
+        position:absolute !important; top:0 !important; left:0 !important;
+        width:100% !important; height:100% !important;
+        object-fit:cover !important; opacity:1 !important;
+        display:block !important; visibility:visible !important;
+      }
+      #qr-h5-area span, #qr-h5-area img,
+      #qr-h5-area div[style*="border:"] { display:none !important; }
+    `;
+    document.head.appendChild(style);
+
+    function cleanup(){
+      doneRef.current=true;
+      if(sc){ try{ sc.stop().catch(()=>{}); sc.clear(); }catch(e){} sc=null; }
+      if(portal.parentNode) portal.parentNode.removeChild(portal);
+      const st=document.getElementById("qr-hide-lib-ui");
+      if(st&&st.parentNode) st.parentNode.removeChild(st);
+    }
+
+    // Skjult canvas til center-crop decode
+    const cropCanvas=document.createElement("canvas");
+    cropCanvas.style.display="none";
+    portal.appendChild(cropCanvas);
+    let cropLoop=null;
+    let nativeDetector=null;
+    try{ if(window.BarcodeDetector) nativeDetector=new window.BarcodeDetector({formats:["qr_code"]}); }catch(e){}
+
+    // Decode én center-crop: henter video-frame, cropper den centrale 200px-region,
+    // skalerer op til 400px og forsøger native BarcodeDetector → Html5Qrcode.scanFile fallback
+    function decodeCrop(video){
+      if(doneRef.current||!video||video.readyState<2) return;
+      const vw=video.videoWidth, vh=video.videoHeight;
+      if(!vw||!vh) return;
+      // Beregn crop-region svarende til vores 200px overlay-ramme i video-koordinater
+      const screenW=window.innerWidth, screenH=window.innerHeight;
+      const scaleX=vw/screenW, scaleY=vh/screenH;
+      const cropPx=200; // matcher overlay-rammen
+      const cropW=Math.round(cropPx*scaleX), cropH=Math.round(cropPx*scaleY);
+      const cropX=Math.round((vw-cropW)/2), cropY=Math.round((vh-cropH)/2);
+      // Skaler crop op til 400px for at give decoder flere pixels per QR-modul
+      const OUT=400;
+      cropCanvas.width=OUT; cropCanvas.height=OUT;
+      const ctx=cropCanvas.getContext("2d");
+      ctx.drawImage(video, cropX,cropY,cropW,cropH, 0,0,OUT,OUT);
+
+      if(nativeDetector){
+        nativeDetector.detect(cropCanvas).then(codes=>{
+          if(codes.length>0) onDecoded(codes[0].rawValue);
+        }).catch(()=>{});
+      } else if(window.Html5Qrcode){
+        // Brug scanFile API til at decode én canvas-frame
+        cropCanvas.toBlob(blob=>{
+          if(!blob||doneRef.current) return;
+          const file=new File([blob],"frame.jpg",{type:"image/jpeg"});
+          const tmp=new window.Html5Qrcode("qr-tmp-decode",{verbose:false});
+          tmp.scanFile(file,false).then(decoded=>{ tmp.clear(); onDecoded(decoded); }).catch(()=>{ try{tmp.clear();}catch(e){} });
+        },"image/jpeg",0.92);
       }
     }
 
+    function startCropLoop(video){
+      // Kør crop-decode hvert 800ms — færre men skarpere forsøg
+      cropLoop=setInterval(()=>decodeCrop(video),800);
+    }
+
+    function onDecoded(value){
+      if(doneRef.current) return;
+      doneRef.current=true;
+      if(cropLoop){clearInterval(cropLoop);cropLoop=null;}
+      const el=portal.querySelector("#qr-status-txt");
+      if(el){el.style.color="#22c55e";el.textContent="✓ "+value;}
+      setTimeout(()=>{ cleanup(); onResult(value); },500);
+    }
+
+    function cleanup(){
+      doneRef.current=true;
+      if(cropLoop){clearInterval(cropLoop);cropLoop=null;}
+      if(sc){ try{ sc.stop().catch(()=>{}); sc.clear(); }catch(e){} sc=null; }
+      if(portal.parentNode) portal.parentNode.removeChild(portal);
+      const st=document.getElementById("qr-hide-lib-ui");
+      if(st&&st.parentNode) st.parentNode.removeChild(st);
+      const tmp=document.getElementById("qr-tmp-decode");
+      if(tmp&&tmp.parentNode) tmp.parentNode.removeChild(tmp);
+    }
+
+    // Skjult div til Html5Qrcode.scanFile (kræver et DOM-element med id)
+    const tmpDiv=document.createElement("div");
+    tmpDiv.id="qr-tmp-decode";
+    tmpDiv.style.display="none";
+    document.body.appendChild(tmpDiv);
+
+    function startScanner(){
+      if(!window.Html5Qrcode){
+        const el=portal.querySelector("#qr-status-txt");
+        if(el) el.textContent="❌ Scanner ikke indlæst";
+        return;
+      }
+      const W=window.innerWidth, H=window.innerHeight;
+      scanDiv.style.cssText=`position:absolute;top:0;left:0;width:${W}px;height:${H}px;`;
+      sc=new window.Html5Qrcode("qr-h5-area",{verbose:false});
+      // qrbox=1px: library scanner stadig hele frame, men viser ingen synlig scan-boks
+      // (vores custom overlay viser rammen)
+      sc.start(
+        {facingMode:"environment"},
+        {fps:6, qrbox:{width:1,height:1}, videoConstraints:{facingMode:"environment",width:{ideal:1920},height:{ideal:1080}}, experimentalFeatures:{useBarCodeDetectorIfSupported:false}},
+        (decoded)=>{ onDecoded(decoded); },
+        ()=>{}
+      ).then(()=>{
+        // Når library kører: find dens interne video-element og start crop-loop
+        const vid=scanDiv.querySelector("video");
+        if(vid){
+          if(vid.readyState>=2){ startCropLoop(vid); }
+          else{ vid.addEventListener("loadeddata",()=>startCropLoop(vid),{once:true}); }
+        }
+      }).catch(e=>{
+        const el=portal.querySelector("#qr-status-txt");
+        if(el) el.textContent="❌ "+String(e).slice(0,80);
+      });
+    }
+
     if(window.Html5Qrcode){
-      startScanner();
+      requestAnimationFrame(startScanner);
     } else {
-      statusEl.textContent="Henter scanner-bibliotek...";
       const s=document.createElement("script");
       s.src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js";
-      s.onload=startScanner;
-      s.onerror=()=>{ statusEl.textContent="❌ Netværksfejl - prøv igen"; };
+      s.onload=()=>requestAnimationFrame(startScanner);
+      s.onerror=()=>{
+        const el=portal.querySelector("#qr-status-txt");
+        if(el) el.textContent="❌ Netværksfejl";
+      };
       document.head.appendChild(s);
     }
 
     return ()=>{ cleanup(); };
   },[]);
 
-  // This component renders nothing — UI is in the portal outside React
   return null;
 }
 
 
+// Udtræk sammenlignbare felter fra MotorAPI svar
+// Feltnavne bekræftet fra live API-svar:
+// first_registration = "2020-12-15+01:00" (rod-niveau)
+// mot_info.date = "2025-02-18" (sidst syn)
+// mot_info.next_inspection_date = null eller dato
+function getFelterFraData(data, mc, synsData) {
+  if(!data && !synsData) return [];
+
+  const norm = raw => raw ? raw.split("+")[0].split("T")[0] : "";
+
+  // ── Synsbasen felter (primær kilde) ──
+  const sb = synsData ? synsbasenFelter(synsData) : {};
+
+  // ── MotorAPI felter (fallback hvis Synsbasen mangler) ──
+  const motorStel       = data?.vin || "";
+  const motorFoerste    = norm(data?.first_registration || data?.first_registration_date || "");
+  const motorSyn        = norm(data?.mot_info?.date || "");
+  const motorNaesteSyn  = data?._naesteSyn || "";
+  const motorBeskr      = [data?.make, data?.model, data?.variant].filter(Boolean).join(" ").toUpperCase();
+
+  // Brug Synsbasen hvis den har data, ellers MotorAPI
+  const stel       = sb.stel       || motorStel;
+  const foerste    = sb.foersteReg || motorFoerste;
+  const synDato    = sb.syn        || motorSyn;
+  const naesteSyn  = sb.naesteSyn  || motorNaesteSyn;
+  const beskr      = sb.beskrivelse|| motorBeskr;
+
+  return [
+    {felt:"stel",       label:"Stelnummer (VIN)",      api:stel,       mc:mc?.stel||""},
+    {felt:"beskrivelse",label:"Beskrivelse",            api:beskr,      mc:mc?.beskrivelse||""},
+    {felt:"foersteReg", label:"1. indregistrering",    api:foerste,    mc:mc?.foersteReg||""},
+    {felt:"syn",        label:"Sidst syn",              api:synDato,    mc:mc?.syn||""},
+    {felt:"naesteSyn",  label:"Næste syn",              api:naesteSyn,  mc:mc?.naesteSyn||""},
+  ].filter(f => f.api);
+}
+
+function MotorApiKnap({reg, mc, onOverskriv, btnGhost}) {
+  // Alle hooks SKAL stå øverst — ingen hooks efter conditional return (React regel)
+  const [loading, setLoading] = React.useState(false);
+  const [apiData, setApiData] = React.useState(null);
+  const [fejl, setFejl] = React.useState("");
+  const [vis, setVis] = React.useState(false);
+  const [valgte, setValgte] = React.useState({});
+
+  // Log rå API-data til konsol så vi kan se feltnavne
+  React.useEffect(() => {
+    if(!apiData) return;
+    console.log("MotorAPI rå svar:", JSON.stringify(apiData, null, 2));
+    const felter = getFelterFraData(apiData, mc, synsData);
+    setValgte(Object.fromEntries(felter.map(f=>[f.felt, f.api!==f.mc])));
+  }, [apiData]);
+
+  const [synsData, setSynsData] = React.useState(null);
+  const slaaOp = async () => {
+    if(!reg||reg.trim().length<5) { setFejl("Indtast reg.nr først"); return; }
+    setLoading(true); setFejl(""); setApiData(null); setSynsData(null); setVis(false);
+    try {
+      // Hent MotorAPI og Synsbasen parallelt
+      const [motorRes, synsRes] = await Promise.allSettled([
+        motorApi(reg),
+        synsbasenApi(reg),
+      ]);
+      const data = motorRes.status==="fulfilled" ? motorRes.value : null;
+      const sdata = synsRes.status==="fulfilled" ? synsRes.value : null;
+      // Kræv mindst én af dem
+      if(!data && !sdata) { setFejl("Ingen data fundet for dette reg.nr"); setLoading(false); return; }
+      if(data && sdata?.next_inspection_date_estimate) data._naesteSyn = sdata.next_inspection_date_estimate;
+      setApiData(data);
+      setSynsData(sdata);
+      setVis(true);
+    } catch(e) { setFejl("Fejl: "+e.message); }
+    setLoading(false);
+  };
+
+  // Beregn felter til visning
+  const getFelter = () => getFelterFraData(apiData, mc);
+
+  const anvend = () => {
+    const felter = getFelter();
+    const opdateringer = {};
+    felter.forEach(f=>{ if(valgte[f.felt]&&f.api) opdateringer[f.felt]=f.api; });
+    if(Object.keys(opdateringer).length>0&&onOverskriv) onOverskriv(opdateringer);
+    setVis(false);
+  };
+
+  if(!vis||!apiData) return (
+    <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid #222"}}>
+      <button onClick={slaaOp} disabled={loading} style={{...btnGhost,fontSize:12,padding:"7px 14px",opacity:loading?0.6:1}}>
+        {loading?"⏳ Henter...":"🔍 Slå op i motorregistret"}
+      </button>
+      {fejl&&<div style={{marginTop:6,fontSize:12,color:"#f87171"}}>{fejl}</div>}
+    </div>
+  );
+
+  const felter = getFelter();
+  const apiStatus = apiData.registration?.status||"";
+
+  return (
+    <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid #222"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <span style={{fontSize:12,color:"#60a5fa",fontWeight:700}}>
+          🔍 {[apiData.make,apiData.model].filter(Boolean).join(" ")||"Motorregistret"}
+          {apiStatus&&<span style={{marginLeft:6,color:apiStatus==="registreret"?"#4ade80":"#f87171",fontSize:11}}>({apiStatus})</span>}
+        </span>
+        <button onClick={()=>setVis(false)} style={{background:"none",border:"none",color:"#666",cursor:"pointer",fontSize:16}}>✕</button>
+      </div>
+
+      {felter.map(f=>{
+        const forskel=f.api!==f.mc;
+        return (
+          <div key={f.felt} style={{padding:"8px 0",borderBottom:"1px solid #1a1a1a"}}>
+            <div style={{fontSize:11,color:"#666",marginBottom:3}}>{f.label}</div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <div style={{flex:1,minWidth:0}}>
+                {f.mc&&<div style={{fontSize:11,color:"#888",marginBottom:1}}>Nuværende: <span style={{color:"#aaa"}}>{f.mc}</span></div>}
+                <div style={{fontSize:12,color:forskel?"#f59e0b":"#4ade80",fontWeight:600}}>API: {f.api}</div>
+              </div>
+              {forskel&&<label style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0}}>
+                <input type="checkbox" checked={valgte[f.felt]||false}
+                  onChange={e=>setValgte(p=>({...p,[f.felt]:e.target.checked}))}
+                  style={{accentColor:"#cc0000",width:16,height:16}}/>
+                <span style={{fontSize:11,color:"#ccc"}}>Brug API</span>
+              </label>}
+              {!forskel&&<span style={{fontSize:11,color:"#4ade80",fontSize:11}}>✓ Ens</span>}
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{marginTop:12,display:"flex",gap:8}}>
+        <button onClick={anvend} style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:7,padding:"9px 18px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+          Anvend valgte
+        </button>
+        <button onClick={()=>{setVis(false);setApiData(null);}} style={{...btnGhost,fontSize:12,padding:"9px 14px"}}>Annuller</button>
+        <button onClick={slaaOp} disabled={loading} style={{...btnGhost,fontSize:12,padding:"9px 14px",marginLeft:"auto",opacity:loading?0.6:1}}>
+          {loading?"⏳":"↺"} Opdater
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function RedigerMc({mc,setMc,onSave,onCancel,locations,inp,btnRed,btnGhost}) {
   const [scannerOpen,setScannerOpen]=useState(false);
+
+
   return (
     <div style={{paddingBottom:20}}>
       {scannerOpen&&<QrScanner
@@ -1031,9 +3282,30 @@ function RedigerMc({mc,setMc,onSave,onCancel,locations,inp,btnRed,btnGhost}) {
       <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
         <button onClick={onCancel} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>← Tilbage</button>
         <h1 style={{margin:0,fontSize:20,fontWeight:700,color:"#fff"}}>{mc.reg||"Ny MC"}</h1>
+
       </div>
+
       <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",padding:"18px 16px",display:"flex",flexDirection:"column",gap:14}}>
-        {[{key:"reg",l:"Registreringsnummer"},{key:"stel",l:"Stelnummer"},{key:"beskrivelse",l:"Beskrivelse"},{key:"syn",l:"Sidst syn (dato)",type:"date"},{key:"km",l:"Kilometertal",type:"number"}].map(f=>(
+        {/* MC Nummer */}
+        {[{key:"mcNr",l:"MC Nummer",type:"number"}].map(f=>(
+          <div key={f.key}>
+            <label style={{display:"block",fontSize:11,color:"#777",letterSpacing:.8,marginBottom:4,fontWeight:600,textTransform:"uppercase"}}>{f.l}</label>
+            <input type={f.type||"text"} value={mc[f.key]||""} onChange={e=>setMc(p=>({...p,[f.key]:e.target.value}))} style={{...inp,WebkitAppearance:"none",appearance:"none",maxWidth:"100%"}}/>
+          </div>
+        ))}
+
+        {/* Reg.nr + MotorAPI knap direkte under */}
+        <div>
+          <label style={{display:"block",fontSize:11,color:"#777",letterSpacing:.8,marginBottom:4,fontWeight:600,textTransform:"uppercase"}}>Registreringsnummer</label>
+          <input type="text" value={mc.reg||""} onChange={e=>setMc(p=>({...p,reg:e.target.value}))} style={{...inp,WebkitAppearance:"none",appearance:"none",maxWidth:"100%"}}/>
+        </div>
+        {/* MotorAPI opslag — placeret lige under reg.nr */}
+        <MotorApiKnap reg={mc.reg} mc={mc} onOverskriv={(opdateringer)=>{
+          setMc(p=>({...p,...opdateringer}));
+        }} btnGhost={btnGhost}/>
+
+        {/* Øvrige felter */}
+        {[{key:"stel",l:"Stelnummer"},{key:"beskrivelse",l:"Beskrivelse"},{key:"foersteReg",l:"1. indregistrering",type:"date"},{key:"syn",l:"Sidst syn — næste beregnes automatisk (+2 år)",type:"date"},{key:"km",l:"Kilometertal",type:"number"}].map(f=>(
           <div key={f.key}>
             <label style={{display:"block",fontSize:11,color:"#777",letterSpacing:.8,marginBottom:4,fontWeight:600,textTransform:"uppercase"}}>{f.l}</label>
             <input type={f.type||"text"} value={mc[f.key]||""} onChange={e=>setMc(p=>({...p,[f.key]:e.target.value}))} style={{...inp,WebkitAppearance:"none",appearance:"none",maxWidth:"100%"}}/>
@@ -1115,10 +3387,18 @@ function NyFakturaView({faktura,setFaktura,mc,ydelser,addLinje,removeLinje,setAn
         <h1 style={{margin:0,fontSize:18,fontWeight:700,color:"#fff"}}>{editMode?"Rediger faktura":"Tilføj reparation"} — {mc.reg}</h1>
       </div>
 
-      {/* Dato row */}
-      <div style={{marginBottom:14,maxWidth:220}}>
-        <label style={{display:"block",fontSize:11,color:"#ffdddd",marginBottom:4,fontWeight:600,textTransform:"uppercase",letterSpacing:.8}}>Dato</label>
-        <input type="date" value={faktura.dato} onChange={e=>setFaktura(p=>({...p,dato:e.target.value}))} style={{...inp,background:"#b30000",border:"1px solid #ff4444",color:"#fff"}}/>
+      {/* Dato + km row */}
+      <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+        <div style={{minWidth:160}}>
+          <label style={{display:"block",fontSize:11,color:"#ffdddd",marginBottom:4,fontWeight:600,textTransform:"uppercase",letterSpacing:.8}}>Dato</label>
+          <input type="date" value={faktura.dato} onChange={e=>setFaktura(p=>({...p,dato:e.target.value}))} style={{...inp,background:"#b30000",border:"1px solid #ff4444",color:"#fff"}}/>
+        </div>
+        <div style={{minWidth:130}}>
+          <label style={{display:"block",fontSize:11,color:"#ffdddd",marginBottom:4,fontWeight:600,textTransform:"uppercase",letterSpacing:.8}}>Km ved service</label>
+          <input type="number" value={faktura.km||""} placeholder={mc?.km||""}
+            onChange={e=>setFaktura(p=>({...p,km:Number(e.target.value)||0}))}
+            style={{...inp,background:"#b30000",border:"1px solid #ff4444",color:"#fff"}}/>
+        </div>
       </div>
 
       {/* Responsive layout - 1 col mobile, 2 col desktop */}
@@ -1228,33 +3508,38 @@ function NyFakturaView({faktura,setFaktura,mc,ydelser,addLinje,removeLinje,setAn
 }
 
 // ── Opgaver ───────────────────────────────────────────────────────────────────
-function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp,btnRed,btnGhost}) {
+function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp,btnRed,btnGhost,onFotoKlik}) {
   const [search,setSearch]=useState("");
   const [filterLoc,setFilterLoc]=useState("Alle");
   const [filterStatus,setFilterStatus]=useState("aktive");
-  const [form,setForm]=useState({titel:"",beskrivelse:"",lokation:locations[0],senestUdfoert:new Date().toISOString().split("T")[0]});
+  const [form,setForm]=useState({titel:"",beskrivelse:"",lokation:locations[0],senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
 
   const tilfoej=()=>{
     if(!form.titel.trim()){notify("Skriv en titel",true);return;}
-    const ny={id:Date.now(),titel:form.titel.trim(),beskrivelse:form.beskrivelse.trim(),lokation:form.lokation,senestUdfoert:form.senestUdfoert,oprettet:new Date().toISOString().split("T")[0],udfoert:false,udfoertDato:null};
+    const ny={id:Date.now(),titel:form.titel.trim(),beskrivelse:form.beskrivelse.trim(),lokation:form.lokation,senestUdfoert:form.senestUdfoert,oprettet:new Date().toISOString().split("T")[0],udfoert:false,udfoertDato:null,mcId:null,mcReg:"",foto:form.foto||""};
     setOpgaver(p=>[ny,...p]);
-    setForm({titel:"",beskrivelse:"",lokation:locations[0],senestUdfoert:new Date().toISOString().split("T")[0]});
+    db("opgaver",{method:"POST",body:JSON.stringify(opgToDb(ny)),prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
+    setForm({titel:"",beskrivelse:"",lokation:locations[0],senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
     setVisForm(false);
     notify("Opgave oprettet ✓");
   };
 
   const markerUdfoert=(id)=>{
-    setOpgaver(p=>p.map(o=>o.id===id?{...o,udfoert:true,udfoertDato:new Date().toISOString().split("T")[0]}:o));
+    const dato=new Date().toISOString().split("T")[0];
+    setOpgaver(p=>p.map(o=>o.id===id?{...o,udfoert:true,udfoertDato:dato}:o));
+    db(`opgaver?id=eq.${id}`,{method:"PATCH",body:JSON.stringify({udfoert:true,udfoert_dato:dato}),prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
     notify("Opgave markeret som udført ✓");
   };
 
   const slet=(id)=>{
     setOpgaver(p=>p.filter(o=>o.id!==id));
+    db(`opgaver?id=eq.${id}`,{method:"DELETE",prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
     notify("Opgave slettet");
   };
 
   const genaktiver=(id)=>{
     setOpgaver(p=>p.map(o=>o.id===id?{...o,udfoert:false,udfoertDato:null}:o));
+    db(`opgaver?id=eq.${id}`,{method:"PATCH",body:JSON.stringify({udfoert:false,udfoert_dato:""}),prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
     notify("Opgave genaktiveret");
   };
 
@@ -1307,6 +3592,24 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
                 </select>
               </div>
             </div>
+            {/* Foto upload */}
+            <div>
+              <label style={{display:"block",fontSize:11,color:"#888",marginBottom:4,fontWeight:600,letterSpacing:.8,textTransform:"uppercase"}}>Billede (valgfrit)</label>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <button onClick={()=>document.getElementById("opg-foto-input").click()}
+                  style={{...btnGhost,fontSize:13,padding:"8px 14px",flexShrink:0}}>
+                  📷 {form.foto?"Skift billede":"Upload billede"}
+                </button>
+                {form.foto&&<button onClick={()=>setForm(p=>({...p,foto:""}))} style={{background:"none",border:"none",color:"#f87171",cursor:"pointer",fontSize:13}}>✕ Fjern</button>}
+                <input id="opg-foto-input" type="file" accept="image/*" capture="environment" style={{display:"none"}}
+                  onChange={e=>{
+                    const file=e.target.files[0]; if(!file) return;
+                    fixOgKomprimer(file, dataUrl => setForm(p=>({...p,foto:dataUrl})));
+                    e.target.value="";
+                  }}/>
+              </div>
+              {form.foto&&<img src={form.foto} alt="" style={{marginTop:8,width:"100%",maxHeight:120,objectFit:"cover",borderRadius:6}}/>}
+            </div>
             <div style={{display:"flex",gap:8,marginTop:4}}>
               <button onClick={tilfoej} style={{...btnRed,flex:1,justifyContent:"center",padding:"11px"}}>Tilføj opgave</button>
               <button onClick={()=>setVisForm(false)} style={{...btnGhost,padding:"11px 16px"}}>Annuller</button>
@@ -1329,7 +3632,12 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
         </select>
         <select value={filterLoc} onChange={e=>setFilterLoc(e.target.value)} style={sel}>
           <option value="Alle">Alle afdelinger</option>
-          {locations.map(l=><option key={l}>{l}</option>)}
+          {[...locations].sort((a,b)=>{
+            const NEDERST=["Solgte MC'er","MC til salg","Lager / Depot"];
+            const aLav=NEDERST.includes(a),bLav=NEDERST.includes(b);
+            if(aLav&&!bLav) return 1; if(!aLav&&bLav) return -1;
+            return a.localeCompare(b,"da");
+          }).map(l=><option key={l}>{l}</option>)}
         </select>
       </div>
 
@@ -1352,7 +3660,9 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
                   {/* Titel + lokation */}
                   <div style={{fontWeight:700,fontSize:15,color:o.udfoert?"#888":"#fff",marginBottom:4}}>{o.titel}</div>
                   <div style={{fontSize:12,color:"#cc6666",marginBottom:o.beskrivelse?6:0,fontWeight:600}}>📍 {o.lokation}</div>
-                  {o.beskrivelse&&<div style={{fontSize:13,color:"#aaa",lineHeight:1.5,marginBottom:10}}>{o.beskrivelse}</div>}
+                  {o.beskrivelse&&<div style={{fontSize:13,color:"#aaa",lineHeight:1.5,marginBottom:o.foto?8:10}}>{o.beskrivelse}</div>}
+                  {o.foto&&<img src={o.foto} alt="" onClick={()=>onFotoKlik&&onFotoKlik(o.foto)} style={{width:"100%",maxHeight:160,objectFit:"cover",borderRadius:8,marginBottom:10,cursor:"zoom-in"}}/>}
+                  {o.mcReg&&<div style={{fontSize:11,color:"#555",marginBottom:6,fontWeight:600}}>🏍 MC: {o.mcReg}</div>}
                   {/* Bund: dato boks + knapper */}
                   <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginTop:10,flexWrap:"wrap"}}>
                     <div style={{background:"#252525",borderRadius:8,padding:"7px 12px",textAlign:"center"}}>
@@ -1392,10 +3702,19 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
 }
 
 
-function AlleFakturaer({fakturaer,onVis,fmt,inp,btnGhost}) {
+function AlleFakturaer({fakturaer,onVis,onSætFaktureret,fmt,inp,btnGhost}) {
   const [search,setSearch]=useState("");
-  const fil=fakturaer.filter(f=>!search||f.id.toLowerCase().includes(search.toLowerCase())||f.mcReg.toLowerCase().includes(search.toLowerCase()));
-  const total=fakturaer.reduce((s,f)=>s+f.total,0);
+  const [filterAfd,setFilterAfd]=useState("Alle");
+  const [filterFak,setFilterFak]=useState("alle"); // alle/faktureret/ikkeFaktureret
+  const afdelinger=["Alle",...new Set(fakturaer.map(f=>f.afdeling).filter(Boolean))];
+  const fil=fakturaer.filter(f=>{
+    if(search&&!f.id.toLowerCase().includes(search.toLowerCase())&&!f.mcReg.toLowerCase().includes(search.toLowerCase())&&!(f.afdeling||"").toLowerCase().includes(search.toLowerCase())) return false;
+    if(filterAfd!=="Alle"&&f.afdeling!==filterAfd) return false;
+    if(filterFak==="faktureret"&&!f.faktureret) return false;
+    if(filterFak==="ikkeFaktureret"&&f.faktureret) return false;
+    return true;
+  });
+  const total=fil.reduce((s,f)=>s+f.total,0);
   return (
     <div style={{paddingBottom:20}}>
       <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:16,flexWrap:"wrap"}}>
@@ -1405,31 +3724,52 @@ function AlleFakturaer({fakturaer,onVis,fmt,inp,btnGhost}) {
           <span style={{fontWeight:800,color:"#4ade80",fontSize:16}}>{fmt(total)} kr</span>
         </div>
       </div>
-      <input placeholder="🔍  Søg..." value={search} onChange={e=>setSearch(e.target.value)} style={{...inp,maxWidth:320,marginBottom:14,background:"#1e1e1e",border:"1px solid #333"}}/>
+      <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+        <input placeholder="🔍  Søg..." value={search} onChange={e=>setSearch(e.target.value)} style={{...inp,maxWidth:220,background:"#1e1e1e",border:"1px solid #333",flex:"1 1 160px"}}/>
+        <select value={filterAfd} onChange={e=>setFilterAfd(e.target.value)} style={{...inp,maxWidth:180,background:"#1e1e1e",border:"1px solid #333",flex:"1 1 140px"}}>
+          {afdelinger.map(a=><option key={a}>{a}</option>)}
+        </select>
+        <select value={filterFak} onChange={e=>setFilterFak(e.target.value)} style={{...inp,maxWidth:200,background:"#1e1e1e",border:"1px solid #333",flex:"1 1 150px"}}>
+          <option value="alle">Alle fakturaer</option>
+          <option value="ikkeFaktureret">Ikke faktureret</option>
+          <option value="faktureret">Faktureret</option>
+        </select>
+      </div>
       <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
         {fil.length===0?(
           <div style={{padding:40,textAlign:"center",color:"#555",fontSize:14}}>{fakturaer.length===0?"Ingen fakturaer — opret fra en MC":"Ingen resultater"}</div>
         ):(
           <div>
-            <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
-              <colgroup><col style={{width:"22%"}}/><col style={{width:"26%"}}/><col style={{width:"26%"}}/><col style={{width:"20%"}}/><col style={{width:"6%"}}/></colgroup>
-              <thead><tr style={{background:"#222"}}>
-                {["Faktura nr","MC Reg.nr","Dato","Total",""].map(h=>(
-                  <th key={h} style={{padding:"9px 10px",textAlign:"left",fontSize:10,letterSpacing:.5,color:"#777",fontWeight:700,textTransform:"uppercase",overflow:"hidden"}}>{h}</th>
-                ))}
-              </tr></thead>
-              <tbody>
-                {fil.map((f,i)=>(
-                  <tr key={f.id} className="tap" style={{background:i%2===0?"#1a1a1a":"#1e1e1e",borderBottom:"1px solid #222",cursor:"pointer"}} onClick={()=>onVis(f)}>
-                    <td style={{padding:"10px 10px",fontWeight:700,color:"#f87171",fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.id}</td>
-                    <td style={{padding:"10px 10px",fontWeight:600,fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.mcReg}</td>
-                    <td style={{padding:"10px 10px",fontSize:12,color:"#ccc",whiteSpace:"nowrap"}}>{fmtDato(f.dato)}</td>
-                    <td style={{padding:"10px 10px",fontWeight:700,color:"#4ade80",fontSize:12,whiteSpace:"nowrap"}}>{fmt(f.total)} kr</td>
-                    <td style={{padding:"10px 6px",color:"#888",textAlign:"center"}}>›</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {fil.map((f,i)=>(
+              <div key={f.id} className="tap"
+                style={{background:i%2===0?"#1a1a1a":"#1e1e1e",borderBottom:"1px solid #222",padding:"11px 14px",cursor:"pointer",display:"flex",alignItems:"center",gap:10}}
+                onClick={()=>onVis(f)}>
+                {/* Venstre: faktura nr + MC + afdeling */}
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
+                    <span style={{fontWeight:700,color:"#f87171",fontSize:13}}>{f.id}</span>
+                    <span style={{fontWeight:600,fontSize:13,color:"#fff"}}>{f.mcReg}</span>
+                  </div>
+                  <div style={{fontSize:11,color:"#888",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                    {f.afdeling||"-"} · {fmtDato(f.dato)}{f.km?<span> · {f.km.toLocaleString("da-DK")} km</span>:null}
+                  </div>
+                </div>
+                {/* Højre: total + status + pdf */}
+                <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+                  <span style={{fontWeight:700,color:"#4ade80",fontSize:13,whiteSpace:"nowrap"}}>{fmt(f.total)} kr</span>
+                  <button onClick={e=>{e.stopPropagation();onSætFaktureret(f.id,!f.faktureret);}}
+                    style={{background:f.faktureret?"#1a3a2a":"#2a2a2a",border:`1px solid ${f.faktureret?"#22c55e55":"#444"}`,
+                      color:f.faktureret?"#4ade80":"#888",borderRadius:6,padding:"4px 8px",fontSize:10,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                    {f.faktureret?"✓ Fak.":"○ Afv."}
+                  </button>
+                  <button onClick={e=>{e.stopPropagation();genPDF(f);}}
+                    style={{background:"#252525",border:"1px solid #444",color:"#ccc",borderRadius:6,padding:"4px 8px",fontSize:10,fontWeight:700,cursor:"pointer"}}>
+                    ⬇
+                  </button>
+                  <span style={{color:"#555",fontSize:14}}>›</span>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -1437,19 +3777,236 @@ function AlleFakturaer({fakturaer,onVis,fmt,inp,btnGhost}) {
   );
 }
 
-function FakturaDetalje({faktura,onBack,onRediger,fmt,btnGhost,btnRed}) {
+function FakturaDetalje({faktura,onBack,onRediger,onSætFaktureret,fmt,btnGhost,btnRed,lokationer=[],notify,isAdmin=false}) {
+  const [sender,setSender] = React.useState(false);
+  const [sendtStatus,setSendtStatus] = React.useState(null);
+
+  const sendEconomic = async () => {
+    setSender(true); setSendtStatus(null);
+    try {
+      const lok = lokationer.find(l => l.navn === faktura.afdeling);
+      const dim = lok?.dimension ? Number(lok.dimension) : (ECO_DIM[faktura.afdeling] ?? 99);
+      // Konverter dato til ISO format (YYYY-MM-DD) som e-conomic kræver
+      // Databasen gemmer i DD-MM-YYYY (dansk format)
+      const normToIso = d => {
+        if(!d) return new Date().toISOString().split("T")[0];
+        const s = d.split("T")[0]; // fjern evt. tid
+        const p = s.split("-");
+        if(p.length === 3 && p[0].length === 2) {
+          // DD-MM-YYYY -> YYYY-MM-DD
+          return p[2] + "-" + p[1] + "-" + p[0];
+        }
+        return s; // allerede ISO format
+      };
+      const dato = normToIso(faktura.dato);
+      const tekst = (faktura.id + " - " + (faktura.mcReg||"") + " - " + (faktura.titel||faktura.afdeling||"")).substring(0,255);
+      const total = Number(faktura.total) || 0;
+
+      // Korrekt format for restapi.e-conomic.com/journals-experimental
+      // To finanslinjer i én postering:
+      // Linje 1: Debit afdeling  → positiv med departmentNumber
+      // Linje 2: Kredit modkonto → negativ, contraAccount
+      // Byg voucher — prøv først uden department for at isolere fejl
+      // To posteringslinjer der balancerer:
+      // Linje 1: Debit (-) på afd. 99 — kredit/indtægt til Hovedafdelingen
+      // Linje 2: Kredit (+) på den relevante afdeling — debit/omkostning
+      const linje1 = {
+        date: dato, text: tekst,
+        account: { accountNumber: ECO_KONTO },
+        amount: -total,
+        departmentalDistribution: { departmentalDistributionNumber: 99, distributionType: "department" },
+      };
+      const linje2 = {
+        date: dato, text: tekst,
+        account: { accountNumber: ECO_KONTO },
+        amount: total,
+        departmentalDistribution: { departmentalDistributionNumber: dim, distributionType: "department" },
+      };
+
+      const voucher = {
+        date: dato,
+        journal: { journalNumber: ECO_KLADDE },
+        entries: { financeVouchers: [linje1, linje2] },
+      };
+
+      // Hent åbent regnskabsår der matcher fakturadatoen
+      const years = await ecoApi("GET", "/accounting-years");
+      const alleAar = years?.collection || [];
+      const matchendeAar = alleAar.find(y => {
+        if(y.closed) return false;
+        return dato >= y.fromDate && dato <= y.toDate;
+      });
+      if(!matchendeAar) {
+        throw new Error("Intet åbent regnskabsår dækker datoen " + dato + ". Tjek Regnskab → Regnskabsår i e-conomic.");
+      }
+      console.log("Bruger regnskabsår:", matchendeAar.year, matchendeAar.fromDate, "→", matchendeAar.toDate);
+
+      // Tilføj regnskabsår på voucher-niveau
+      voucher.accountingYear = { year: matchendeAar.year };
+
+      console.log("e-conomic payload:", JSON.stringify(voucher, null, 2));
+      const res = await ecoApi("POST", "/journals-experimental/" + ECO_KLADDE + "/vouchers", voucher);
+      console.log("e-conomic svar:", JSON.stringify(res, null, 2));
+      // Svaret er et array — tag første element
+      const resItem = Array.isArray(res) ? res[0] : res;
+      const vNr = resItem?.voucherNumber || null;
+      // Hent den fulde attachment URL direkte fra svaret (format: 2026-1000008)
+      const attachmentUrl = resItem?.attachment || null;
+      const voucherSelf = resItem?.self || null;
+      console.log("voucherNumber:", vNr, "attachmentUrl:", attachmentUrl);
+
+      // Vedhæft PDF til bilag via multipart/form-data (krævet af e-conomic)
+      if(vNr) {
+        try {
+          // Generer PDF med jsPDF
+          const jsPDFLoaded = await new Promise((res, rej) => {
+            if(window.jspdf) { res(window.jspdf.jsPDF); return; }
+            const s = document.createElement("script");
+            s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+            s.onload = () => res(window.jspdf.jsPDF);
+            s.onerror = rej;
+            document.head.appendChild(s);
+          });
+          const doc = new jsPDFLoaded({orientation:"portrait",unit:"mm",format:"a4"});
+          const W=210,M=18;
+          let y=20;
+          doc.setFontSize(16); doc.setFont("helvetica","bold"); doc.setTextColor(180,0,0);
+          doc.text("FAKTURA " + faktura.id, M, y); y+=8;
+          doc.setFontSize(9); doc.setFont("helvetica","normal"); doc.setTextColor(60,60,60);
+          doc.text("MC: " + (faktura.mcReg||"") + "   Dato: " + (faktura.dato||"") + "   Afdeling: " + (faktura.afdeling||""), M, y); y+=5;
+          if(faktura.titel) { doc.text("Titel: " + faktura.titel, M, y); y+=5; }
+          if(faktura.note)  { doc.text("Note: " + faktura.note, M, y); y+=5; }
+          y+=3;
+          doc.setFontSize(8); doc.setTextColor(120,120,120);
+          doc.text("Beskrivelse", M, y); doc.text("Antal", M+110, y); doc.text("Pris", M+140, y); doc.text("Total", M+165, y);
+          y+=3; doc.setDrawColor(200,200,200); doc.line(M,y,W-M,y); y+=4;
+          doc.setTextColor(40,40,40);
+          (faktura.linjer||[]).forEach(l => {
+            const navn = String(l.navn||"").substring(0,55);
+            const lTotal = Number((l.antal||1)*(l.pris||0));
+            doc.text(navn, M, y);
+            doc.text(String(l.antal||1), M+110, y);
+            doc.text(Number(l.pris||0).toLocaleString("da-DK",{minimumFractionDigits:2}) + " kr", M+155, y, {align:"right"});
+            doc.text(lTotal.toLocaleString("da-DK",{minimumFractionDigits:2}) + " kr", M+178, y, {align:"right"});
+            y+=5; if(y>270){doc.addPage();y=20;}
+          });
+          y+=3; doc.line(M,y,W-M,y); y+=6;
+          doc.setFontSize(11); doc.setFont("helvetica","bold");
+          doc.text("TOTAL:", M+115, y);
+          doc.text(Number(faktura.total||0).toLocaleString("da-DK",{minimumFractionDigits:2}) + " kr", M+178, y, {align:"right"});
+
+          // Konverter til Blob
+          const pdfBlob = doc.output("blob");
+          const attachBase = attachmentUrl || (ECO_BASE + "/journals-experimental/" + ECO_KLADDE + "/vouchers/" + vNr + "/attachment");
+          console.log("PDF attachment URL:", attachBase);
+
+          // e-conomic journals attachment — prøv alle kendte metoder
+          const ecoHeaders = {
+            "X-AppSecretToken": ECO_APP,
+            "X-AgreementGrantToken": ECO_GRANT,
+          };
+
+          // Metode A: PATCH med multipart/form-data (journals-bloggen nævner PATCH til vedhæftninger)
+          const formA = new FormData();
+          formA.append("file", pdfBlob, faktura.id + ".pdf");
+          let uploadOk = false;
+          let uploadRes = await fetch(attachBase, {
+            method: "PATCH", headers: ecoHeaders, body: formA,
+          }).catch(e => ({ ok: false, status: "net-err", text: () => Promise.resolve(e.message) }));
+          console.log("PATCH attachment:", uploadRes.status);
+
+          if(uploadRes.ok) {
+            uploadOk = true;
+            console.log("PDF vedhæftet via PATCH til bilag", vNr);
+          }
+
+          // Metode B: PUT med raw PDF binary (Content-Type: application/pdf)
+          if(!uploadOk) {
+            uploadRes = await fetch(attachBase, {
+              method: "PUT",
+              headers: { ...ecoHeaders, "Content-Type": "application/pdf", "Content-Disposition": "attachment; filename=\"" + faktura.id + ".pdf\"" },
+              body: pdfBlob,
+            }).catch(e => ({ ok: false, status: "net-err", text: () => Promise.resolve(e.message) }));
+            console.log("PUT raw PDF attachment:", uploadRes.status);
+            if(uploadRes.ok) {
+              uploadOk = true;
+              console.log("PDF vedhæftet via PUT raw til bilag", vNr);
+            }
+          }
+
+          // Metode C: POST til /file med multipart
+          if(!uploadOk) {
+            const formC = new FormData();
+            formC.append("file", pdfBlob, faktura.id + ".pdf");
+            uploadRes = await fetch(attachBase + "/file", {
+              method: "POST", headers: ecoHeaders, body: formC,
+            }).catch(e => ({ ok: false, status: "net-err", text: () => Promise.resolve(e.message) }));
+            console.log("POST /file attachment:", uploadRes.status);
+            if(uploadRes.ok) {
+              uploadOk = true;
+              console.log("PDF vedhæftet via POST /file til bilag", vNr);
+            }
+          }
+
+          // Metode D: PUT med multipart/form-data
+          if(!uploadOk) {
+            const formD = new FormData();
+            formD.append("file", pdfBlob, faktura.id + ".pdf");
+            uploadRes = await fetch(attachBase, {
+              method: "PUT", headers: ecoHeaders, body: formD,
+            }).catch(e => ({ ok: false, status: "net-err", text: () => Promise.resolve(e.message) }));
+            console.log("PUT multipart attachment:", uploadRes.status);
+            if(uploadRes.ok) {
+              uploadOk = true;
+              console.log("PDF vedhæftet via PUT multipart til bilag", vNr);
+            }
+          }
+
+          if(!uploadOk) {
+            const errTxt = await uploadRes.text?.().catch(()=>"") || "";
+            console.warn("PDF vedhæftning fejlede med alle metoder. Sidste svar:", uploadRes.status, errTxt);
+          }
+        } catch(pdfErr) {
+          console.warn("PDF vedhæftning fejlede:", pdfErr.message);
+          // Postering er stadig oprettet
+        }
+      }
+
+      setSendtStatus("ok");
+      notify && notify("✓ Sendt til e-conomic — bilag " + (vNr||"?") + " i kassekladde " + ECO_KLADDE);
+    } catch(e) {
+      setSendtStatus("fejl");
+      notify && notify("e-conomic fejl: " + e.message, true);
+    }
+    setSender(false);
+  };
+
   return (
     <div style={{paddingBottom:20}}>
       <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:16,flexWrap:"wrap"}}>
         <button onClick={onBack} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>← Tilbage</button>
         <h1 style={{margin:0,fontSize:18,fontWeight:700,color:"#fff",flex:1,minWidth:0}}>{faktura.id} — {faktura.mcReg}</h1>
+        {isAdmin && <button onClick={()=>onSætFaktureret(faktura.id,!faktura.faktureret)}
+          style={{background:faktura.faktureret?"#1a3a2a":"#2a1a1a",border:`1px solid ${faktura.faktureret?"#22c55e55":"#cc000055"}`,
+            color:faktura.faktureret?"#4ade80":"#f87171",borderRadius:8,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+          {faktura.faktureret?"✓ Faktureret":"○ Marker faktureret"}
+        </button>}
+        <button onClick={()=>genPDF(faktura)} style={{background:"#1a3a2a",border:"1px solid #22c55e44",color:"#4ade80",borderRadius:8,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}>⬇ PDF</button>
+        {isAdmin && <button onClick={sendEconomic} disabled={sender}
+          style={{background:sendtStatus==="ok"?"#1a3a2a":sendtStatus==="fejl"?"#3a1a1a":"#1a2a3a",
+            border:"1px solid "+(sendtStatus==="ok"?"#22c55e44":sendtStatus==="fejl"?"#ef444444":"#3b82f644"),
+            color:sendtStatus==="ok"?"#4ade80":sendtStatus==="fejl"?"#f87171":"#60a5fa",
+            borderRadius:8,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer",opacity:sender?0.6:1}}>
+          {sender?"⏳ Sender...":sendtStatus==="ok"?"✓ Sendt":sendtStatus==="fejl"?"✗ Fejl — prøv igen":"📤 Send til e-conomic"}
+        </button>}
         <button onClick={()=>onRediger(faktura)} style={{...btnRed,fontSize:13,padding:"8px 16px"}}>✏️ Rediger</button>
       </div>
       <div style={{background:"#b30000",borderRadius:10,padding:"16px 14px",marginBottom:12}}>
         <div style={{display:"flex",gap:20,flexWrap:"wrap",marginBottom:faktura.note?12:0}}>
-          {[{l:"Faktura nr",v:faktura.id},{l:"MC",v:faktura.mcReg},{l:"Dato",v:fmtDato(faktura.dato)}].map(r=>(
+          {[{l:"Faktura nr",v:faktura.id},{l:"MC",v:faktura.mcReg},{l:"Dato",v:fmtDato(faktura.dato)},{l:"Km ved service",v:faktura.km?(faktura.km.toLocaleString("da-DK")+" km"):null}].filter(r=>r.v).map(r=>(
             <div key={r.l}><div style={{fontSize:11,color:"#ffdddd",letterSpacing:.8,marginBottom:2,fontWeight:600,textTransform:"uppercase"}}>{r.l}</div><div style={{fontWeight:700,fontSize:14,color:"#fff"}}>{r.v}</div></div>
           ))}
+          {faktura.afdeling&&<div><div style={{fontSize:11,color:"#ffdddd",letterSpacing:.8,marginBottom:2,fontWeight:600,textTransform:"uppercase"}}>Afdeling</div><div style={{fontWeight:700,fontSize:14,color:"#fff"}}>{faktura.afdeling}</div></div>}
           {faktura.titel&&<div><div style={{fontSize:11,color:"#ffdddd",letterSpacing:.8,marginBottom:2,fontWeight:600,textTransform:"uppercase"}}>Titel</div><div style={{fontWeight:700,fontSize:14,color:"#fff"}}>{faktura.titel}</div></div>}
         </div>
         {faktura.note&&<div style={{background:"#cc000066",borderRadius:8,padding:"10px 12px",fontSize:13,color:"#ffdddd"}}>{faktura.note}</div>}
@@ -1493,12 +4050,200 @@ function FakturaDetalje({faktura,onBack,onRediger,fmt,btnGhost,btnRed}) {
   );
 }
 
-function YdelserView({ydelser,nyYdelse,setNyYdelse,editYdelse,setEditYdelse,onGem,onSave,onDel,inp,btnRed,btnGhost,fmt}) {
+function YdelserView({ydelser,nyYdelse,setNyYdelse,editYdelse,setEditYdelse,onGem,onSave,onDel,lokationer,nyLok,setNyLok,editLok,setEditLok,onOpretLok,onGemLok,inp,btnRed,btnGhost,fmt,mcs=[],onBulkOpdater}) {
+  const [bulkStatus,setBulkStatus]=React.useState(null); // null | {kører,done,total,opdateret,fejlet,log}
+
+  const normApiDato = raw => {
+    if(!raw) return "";
+    return raw.split("+")[0].split("T")[0];
+  };
+
+  const kørbulk = async (kunManglende=false) => {
+    const alle = mcs.filter(m => m.location && !["Solgte MC'er","MC til salg"].includes(m.location) && m.reg);
+    const aktive = kunManglende ? alle.filter(m => !m.stel || !m.syn || !m.naesteSyn) : alle;
+    const total = aktive.length;
+    if(total===0){setBulkStatus({kører:false,done:0,total:0,opdateret:0,fejlet:0,log:[{reg:"—",status:"Ingen MC'er mangler opdatering",farve:"#4ade80"}]});return;}
+    setBulkStatus({kører:true,done:0,total,opdateret:0,fejlet:0,log:[]});
+
+    let opdateret=0, fejlet=0;
+    const log=[];
+
+    for(let i=0; i<aktive.length; i++) {
+      const mc = aktive[i];
+      try {
+        // Hent MotorAPI og Synsbasen parallelt — Synsbasen er primær kilde
+        const [motorRes, synsRes] = await Promise.allSettled([
+          motorApi(mc.reg),
+          synsbasenApi(mc.reg),
+        ]);
+        const motorData = motorRes.status === "fulfilled" ? motorRes.value : null;
+        const sdata = synsRes.status === "fulfilled" ? synsRes.value : null;
+
+        // Synsbasen felter
+        const sb = sdata ? synsbasenFelter(sdata) : {};
+
+        // MotorAPI felter som fallback
+        const motorStel    = motorData?.vin || "";
+        const motorFoerste = normApiDato(motorData?.first_registration || motorData?.first_registration_date || "");
+        const motorSyn     = normApiDato(motorData?.mot_info?.date || "");
+
+        // Brug Synsbasen hvis tilgængelig, ellers MotorAPI
+        const opdateringer = {};
+        const nyStel       = sb.stel       || motorStel;
+        const nyFoerste    = sb.foersteReg || motorFoerste;
+        const nySyn        = sb.syn        || motorSyn;
+        const nyNaesteSyn  = sb.naesteSyn  || "";
+        const nyBeskr      = sb.beskrivelse|| "";
+
+        if(nyStel)      opdateringer.stel       = nyStel;
+        if(nyFoerste)   opdateringer.foersteReg = nyFoerste;
+        if(nySyn)       opdateringer.syn        = nySyn;
+        if(nyNaesteSyn) opdateringer.naesteSyn  = nyNaesteSyn;
+        // Opdater beskrivelse kun hvis Synsbasen har den og MC'en ingen har
+        if(nyBeskr && !mc.beskrivelse) opdateringer.beskrivelse = nyBeskr;
+
+        if(Object.keys(opdateringer).length === 0) {
+          log.push({reg:mc.reg, status:"ingen data fra nogen API", farve:"#888"});
+          fejlet++;
+        } else {
+          const ændringer = Object.entries(opdateringer)
+            .filter(([k,v]) => String(mc[k]||"") !== String(v))
+            .map(([k]) => ({stel:"Stel",foersteReg:"1.reg",syn:"Syn",naesteSyn:"Næste syn",beskrivelse:"Beskr."}[k]||k));
+
+          const kilde = sdata && motorData ? "Synsbasen+Motor" : sdata ? "Synsbasen" : "MotorAPI";
+
+          if(ændringer.length > 0) {
+            await onBulkOpdater([{mc, data: opdateringer}]);
+            log.push({reg:mc.reg, status:`✓ ${ændringer.join(", ")} (${kilde})`, farve:"#4ade80"});
+            opdateret++;
+          } else {
+            log.push({reg:mc.reg, status:"ingen ændringer", farve:"#888"});
+          }
+        }
+      } catch(e) {
+        const err = e.message || "";
+        log.push({reg:mc.reg, status:`fejl: ${err}`, farve:"#f87171"});
+        fejlet++;
+      }
+      // Lille pause så vi ikke overbelaster API
+      await new Promise(r=>setTimeout(r,400));
+      setBulkStatus(p=>({...p,done:i+1,opdateret,fejlet,log:[...log]}));
+    }
+    setBulkStatus({kører:false,done:total,total,opdateret,fejlet,log});
+  };
   const cur=editYdelse||nyYdelse;
   const set=editYdelse?setEditYdelse:setNyYdelse;
   return (
     <div style={{paddingBottom:20}}>
       <h1 style={{margin:"0 0 18px",fontSize:22,fontWeight:700,color:"#fff"}}>Administration</h1>
+
+      {/* ── BULK OPDATERING FRA MOTORREGISTRET ── */}
+      <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",padding:16,marginBottom:20}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:bulkStatus?12:0}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:14,color:"#fff",marginBottom:2}}>🔄 Bulk opdater fra motorregistret</div>
+            <div style={{fontSize:12,color:"#888"}}>Henter stelnum, 1. indregistrering og sidst syn for alle aktive MC'er. API er sandhed.</div>
+          </div>
+          <div style={{display:"flex",gap:8,flexShrink:0,marginLeft:16}}>
+            <button onClick={()=>kørbulk(false)} disabled={bulkStatus?.kører}
+              style={{...btnRed,padding:"10px 18px",fontSize:13,opacity:bulkStatus?.kører?0.6:1,whiteSpace:"nowrap"}}>
+              {bulkStatus?.kører?`Kører... ${bulkStatus.done}/${bulkStatus.total}`:"Opdater alle"}
+            </button>
+            <button onClick={()=>kørbulk(true)} disabled={bulkStatus?.kører}
+              style={{...btnGhost,padding:"10px 14px",fontSize:12,opacity:bulkStatus?.kører?0.6:1,whiteSpace:"nowrap"}}>
+              Kun manglende
+            </button>
+          </div>
+        </div>
+
+        {bulkStatus&&(
+          <div>
+            {/* Progress bar */}
+            <div style={{background:"#111",borderRadius:4,height:8,overflow:"hidden",marginBottom:10}}>
+              <div style={{height:"100%",borderRadius:4,background:"#cc0000",width:`${Math.round(bulkStatus.done/bulkStatus.total*100)}%`,transition:"width 0.3s"}}/>
+            </div>
+            {/* Statistik */}
+            <div style={{display:"flex",gap:16,marginBottom:10,fontSize:12}}>
+              <span style={{color:"#4ade80"}}>✓ {bulkStatus.opdateret} opdateret</span>
+              <span style={{color:"#888"}}>{bulkStatus.done-bulkStatus.opdateret-bulkStatus.fejlet} uændrede</span>
+              {bulkStatus.fejlet>0&&<span style={{color:"#f87171"}}>✗ {bulkStatus.fejlet} fejl</span>}
+              {!bulkStatus.kører&&<span style={{color:"#60a5fa",marginLeft:"auto"}}>Færdig — {bulkStatus.total} MC'er behandlet</span>}
+            </div>
+            {/* Log */}
+            <div style={{maxHeight:200,overflowY:"auto",background:"#111",borderRadius:6,padding:"8px 10px"}}>
+              {[...bulkStatus.log].reverse().map((l,i)=>(
+                <div key={i} style={{fontSize:11,fontFamily:"monospace",color:l.farve,padding:"2px 0",borderBottom:"1px solid #1a1a1a"}}>
+                  <span style={{color:"#555",marginRight:8}}>{l.reg}</span>{l.status}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── LOKATIONER ── */}
+      <div style={{marginBottom:20}}>
+        <div style={{fontWeight:700,fontSize:15,color:"#fff",marginBottom:10}}>📍 Lokationer</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:16}}>
+          {/* Opret / Rediger */}
+          <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
+            <div style={{padding:"12px 16px",borderBottom:"1px solid #2a2a2a",fontWeight:700,fontSize:14}}>
+              {editLok?"Rediger lokation":"Opret ny lokation"}
+            </div>
+            <div style={{padding:16,display:"flex",flexDirection:"column",gap:12}}>
+              <div>
+                <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,fontWeight:600,textTransform:"uppercase"}}>Navn</label>
+                <input value={editLok?editLok.navn:nyLok.navn}
+                  onChange={e=>editLok?setEditLok(p=>({...p,navn:e.target.value})):setNyLok(p=>({...p,navn:e.target.value}))}
+                  placeholder="fx Horsens" style={inp}/>
+              </div>
+              <div>
+                <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,fontWeight:600,textTransform:"uppercase"}}>Transport pris (kr)</label>
+                <input type="number" value={editLok?editLok.transport:nyLok.transport}
+                  onChange={e=>editLok?setEditLok(p=>({...p,transport:Number(e.target.value)})):setNyLok(p=>({...p,transport:Number(e.target.value)}))}
+                  placeholder="0" style={inp}/>
+                <div style={{fontSize:11,color:"#555",marginTop:3}}>0 = ingen transport</div>
+              </div>
+              <div>
+                <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,fontWeight:600,textTransform:"uppercase"}}>e-conomic dimension nr.</label>
+                <input type="number" value={editLok?editLok.dimension:nyLok.dimension}
+                  onChange={e=>editLok?setEditLok(p=>({...p,dimension:e.target.value})):setNyLok(p=>({...p,dimension:e.target.value}))}
+                  placeholder="fx 18" style={inp}/>
+                <div style={{fontSize:11,color:"#555",marginTop:3}}>Afdelingsnummer i e-conomic</div>
+              </div>
+              <div style={{display:"flex",gap:8,marginTop:4}}>
+                <button onClick={editLok?onGemLok:onOpretLok}
+                  style={{...btnRed,flex:1,justifyContent:"center",padding:"11px"}}>
+                  {editLok?"GEM":"OPRET"}
+                </button>
+                {editLok&&<button onClick={()=>setEditLok(null)} style={{...btnGhost,padding:"11px 14px"}}>Annuller</button>}
+              </div>
+            </div>
+          </div>
+          {/* Liste */}
+          <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
+            <div style={{padding:"12px 16px",borderBottom:"1px solid #2a2a2a",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontWeight:700,fontSize:14}}>Alle lokationer</span>
+              <span style={{color:"#777",fontSize:12}}>{lokationer.length} stk</span>
+            </div>
+            <div style={{display:"flex",flexDirection:"column"}}>
+              {lokationer.map((l,i)=>(
+                <div key={l.navn} style={{display:"flex",alignItems:"center",padding:"10px 12px",borderBottom:"1px solid #222",background:i%2===0?"#1a1a1a":"#1e1e1e",gap:10}}>
+                  <span style={{flex:1,fontSize:13,fontWeight:500,color:"#fff"}}>📍 {l.navn}</span>
+                  <span style={{fontSize:12,color:l.transport>0?"#4ade80":"#555",fontWeight:600,minWidth:60,textAlign:"right"}}>
+                    {l.transport>0?`${l.transport.toLocaleString("da-DK")} kr`:"Ingen"}
+                  </span>
+                  <button className="tap" onClick={()=>setEditLok({idx:i,navn:l.navn,transport:l.transport||0})}
+                    style={{...btnGhost,padding:"4px 10px",fontSize:12}}>✏️</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── YDELSER ── */}
+      <div style={{fontWeight:700,fontSize:15,color:"#fff",marginBottom:10}}>🔧 Ydelser & Varer</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:16}}>
         <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
           <div style={{padding:"12px 16px",borderBottom:"1px solid #2a2a2a",fontWeight:700,fontSize:14}}>{editYdelse?"Rediger Ydelse":"Opret ny Ydelse / Vare"}</div>

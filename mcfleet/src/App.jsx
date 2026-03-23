@@ -1074,10 +1074,24 @@ export default function App() {
       try {
         // #region agent log
         const _t0=Date.now();
-        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:load-start',message:'Load start',data:{hasCachedUser:!!localStorage.getItem('mcfleet_bruger')},runId:'run1',hypothesisId:'A',timestamp:_t0})}).catch(()=>{});
+        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:load-start',message:'Load start',data:{hasCachedUser:!!localStorage.getItem('mcfleet_bruger'),hasMcsCache:!!sessionStorage.getItem('mcfleet_mcs')},runId:'run2',hypothesisId:'B',timestamp:_t0})}).catch(()=>{});
         // #endregion
 
-        // ── FASE 1: Kritisk data — brugere + MC'er (viser appen hurtigst muligt) ──
+        // ── CACHE: Vis MC'er øjeblikkeligt fra sessionStorage hvis tilgængeligt ──
+        const MC_CACHE_TTL = 5 * 60 * 1000; // 5 min
+        try {
+          const cached = JSON.parse(sessionStorage.getItem('mcfleet_mcs') || 'null');
+          if (cached && cached.ts && Date.now() - cached.ts < MC_CACHE_TTL && cached.data?.length > 0) {
+            setMcs(cached.data.map(mcFromDb));
+            clearTimeout(loadTimeout);
+            setLoading(false); // ← Vis appen fra cache STRAKS (< 50ms)
+            // #region agent log
+            fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:cache-hit',message:'Cache hit — app vist fra cache',data:{cacheAgeMs:Date.now()-cached.ts,mcCount:cached.data.length},runId:'run2',hypothesisId:'B',timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
+          }
+        } catch(e) {}
+
+        // ── FASE 1: Kritisk data — brugere + MC'er (opdaterer baggrunden) ──
         const [dbBrugere, dbMcs] = await Promise.all([
           db("brugere?order=id"),
           db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn&order=id").catch(()=>
@@ -1086,11 +1100,17 @@ export default function App() {
         ]);
         // #region agent log
         const _t1=Date.now();
-        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:fase1-done',message:'Fase 1 done (brugere+mcs)',data:{msMcs:_t1-_t0,mcCount:dbMcs.length,brugerCount:dbBrugere.length},runId:'run1',hypothesisId:'A',timestamp:_t1})}).catch(()=>{});
+        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:fase1-done',message:'Fase 1 done (brugere+mcs)',data:{msMcs:_t1-_t0,mcCount:dbMcs.length,brugerCount:dbBrugere.length},runId:'run2',hypothesisId:'A',timestamp:_t1})}).catch(()=>{});
         // #endregion
+
+        // Gem i sessionStorage-cache til næste load
+        try {
+          sessionStorage.setItem('mcfleet_mcs', JSON.stringify({ts: Date.now(), data: dbMcs}));
+        } catch(e) {}
+
         setMcs(dbMcs.length>0 ? dbMcs.map(mcFromDb) : INIT_MC);
 
-        // Valider login og sæt loading=false så appen vises STRAKS
+        // Valider login og sæt loading=false
         const indlæsteBrugere0 = dbBrugere.length===0 ? INIT_USERS : dbBrugere.map(brugerFromDb);
         setBrugere(indlæsteBrugere0);
         setBruger(prev => {
@@ -1102,43 +1122,34 @@ export default function App() {
           return frisk;
         });
         clearTimeout(loadTimeout);
-        setLoading(false); // ← Vis appen nu! Resten loader i baggrunden
+        setLoading(false);
 
-        // ── FASE 2: Sekundær data — loader i baggrunden ──
+        // ── FASE 2: Sekundær data + opgaver — alle parallelt i baggrunden ──
         const _t2=Date.now();
-        const [dbFak, dbYd, dbLok] = await Promise.all([
+        const [dbFak, dbYd, dbLok, dbOpgRaw] = await Promise.all([
           db("fakturaer?order=id"),
           db("ydelser?order=id"),
           db("lokationer?order=id"),
+          db("opgaver?order=id").catch(async e => {
+            // Timeout-retry med limit
+            if(e.message?.includes("57014")||e.message?.includes("timeout")) {
+              try { return await db("opgaver?order=id&limit=200"); } catch(e2) { return []; }
+            }
+            return [];
+          }),
         ]);
         // #region agent log
         const _t3=Date.now();
-        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:fase2-done',message:'Fase 2 done (fak+yd+lok)',data:{msFase2:_t3-_t2,fakCount:dbFak.length,ydCount:dbYd.length,lokCount:dbLok.length},runId:'run1',hypothesisId:'B',timestamp:_t3})}).catch(()=>{});
+        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:fase2-done',message:'Fase 2 done (fak+yd+lok+opgaver parallelt)',data:{msFase2:_t3-_t2,fakCount:dbFak.length,ydCount:dbYd.length,lokCount:dbLok.length,opgCount:dbOpgRaw.length,totalMs:_t3-_t0},runId:'run2',hypothesisId:'E',timestamp:_t3})}).catch(()=>{});
         // #endregion
+
         const dbFakVar = dbFak;
         const dbYdVar = dbYd;
         const dbLokVar = dbLok;
         setFakturaer(dbFakVar.map(fakFromDb));
         setYdelser(dbYdVar.length>0 ? dbYdVar.map(ydFromDb) : INIT_YDELSER);
+        setOpgaver(dbOpgRaw.map(opgFromDb));
 
-        // Opgaver separat — fejl her stopper ikke resten, prøv evt. igen ved timeout
-        const _t4=Date.now();
-        try {
-          const dbOpg = await db("opgaver?order=id");
-          // #region agent log
-          fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:opgaver-done',message:'Opgaver hentet',data:{msOpgaver:Date.now()-_t4,opgCount:dbOpg.length,totalMs:Date.now()-_t0},runId:'run1',hypothesisId:'E',timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
-          setOpgaver(dbOpg.map(opgFromDb));
-        } catch(e) {
-          console.error("Opgaver load fejl:", e);
-          // Prøv én gang til ved timeout
-          if(e.message?.includes("57014")||e.message?.includes("timeout")) {
-            try {
-              const dbOpg2 = await db("opgaver?order=id&limit=200");
-              setOpgaver(dbOpg2.map(opgFromDb));
-            } catch(e2) { setOpgaver([]); }
-          } else { setOpgaver([]); }
-        }
         // Seed lokationer hvis DB er tom
         if(dbLokVar.length===0){
           const initLok = LOCATIONS.map(l=>({navn:l, transport:TRANSPORT_TAKSTER[l]??0}));

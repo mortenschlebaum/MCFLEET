@@ -1,8 +1,0 @@
-{"sessionId":"b30fe9","location":"App.jsx:load-start","message":"Load start","data":{"hasCachedUser":true},"runId":"run1","hypothesisId":"A","timestamp":1774278147895}
-{"sessionId":"b30fe9","location":"App.jsx:load-start","message":"Load start","data":{"hasCachedUser":true},"runId":"run1","hypothesisId":"A","timestamp":1774278157252}
-{"sessionId":"b30fe9","location":"App.jsx:load-start","message":"Load start","data":{"hasCachedUser":true},"runId":"run1","hypothesisId":"A","timestamp":1774278157501}
-{"sessionId":"b30fe9","location":"App.jsx:load-start","message":"Load start","data":{"hasCachedUser":true},"runId":"run1","hypothesisId":"A","timestamp":1774278157785}
-{"sessionId":"b30fe9","location":"App.jsx:load-start","message":"Load start","data":{"hasCachedUser":true},"runId":"run1","hypothesisId":"A","timestamp":1774278178421}
-{"sessionId":"b30fe9","location":"App.jsx:fase1-done","message":"Fase 1 done (brugere+mcs)","data":{"msMcs":13418,"mcCount":123,"brugerCount":5},"runId":"run1","hypothesisId":"A","timestamp":1774278191839}
-{"sessionId":"b30fe9","location":"App.jsx:fase2-done","message":"Fase 2 done (fak+yd+lok)","data":{"msFase2":711,"fakCount":10,"ydCount":6,"lokCount":14},"runId":"run1","hypothesisId":"B","timestamp":1774278192552}
-{"sessionId":"b30fe9","location":"App.jsx:opgaver-done","message":"Opgaver hentet","data":{"msOpgaver":5851,"opgCount":26,"totalMs":19982},"runId":"run1","hypothesisId":"E","timestamp":1774278198403}

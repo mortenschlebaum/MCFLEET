@@ -11,3 +11,6 @@ mcfleet/build/
 
 # Lokal sammenligning af zip-version (ikke i repo)
 _compare_v100b/
+
+# Cursor IDE-filer (lokale debug-logs, workspace-data osv.)
+.cursor/

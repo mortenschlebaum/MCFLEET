@@ -1,4 +1,9 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
+import { isSupabaseConfigured, getSupabase } from "./lib/supabaseClient";
+import { fetchAllRows } from "./lib/fetchAllRows";
+import { normalizeMcFromDb, normalizeOpgaveFromDb } from "./lib/dbNormalize";
+
+const SB_READY = isSupabaseConfigured();
 
 const LOCATIONS = ["Kolding","KTA Kolding","Århus MC","Hobro","Herning","Viborg","Randers","Horsens","Odense","Lager / Depot"];
 const today = new Date();
@@ -265,7 +270,7 @@ export default function App() {
   const [loginFejl,setLoginFejl]=useState("");
 
   // ── App state (hooks must all be declared before any return) ──
-  const [mcs,setMcs]=useState(INIT_MC);
+  const [mcs,setMcs]=useState(() => (SB_READY ? [] : INIT_MC));
   const [ydelser,setYdelser]=useState(INIT_YDELSER);
   const [fakturaer,setFakturaer]=useState([]);
   const [nav,setNav]=useState("oversigt");
@@ -284,17 +289,73 @@ export default function App() {
   const [opgaver,setOpgaver]=useState([]);
   const [visOpgaveForm,setVisOpgaveForm]=useState(false);
   const [synModal,setSynModal]=useState(false);
+  const [remoteLoading,setRemoteLoading]=useState(SB_READY);
 
   const login=(brugernavn,adgangskode)=>{
     const b=brugere.find(b=>b.brugernavn===brugernavn&&b.adgangskode===adgangskode);
     if(b){setBruger(b);setLoginFejl("");}
     else setLoginFejl("Forkert brugernavn eller adgangskode");
   };
-  const logout=()=>{setBruger(null);setLoginFejl("");};
+  const logout=()=>{
+    setBruger(null);
+    setLoginFejl("");
+    if (SB_READY) {
+      setMcs([]);
+      setOpgaver([]);
+    }
+  };
 
   const isAdmin=bruger?.rolle==="admin";
 
-  const notify=(msg,err)=>{setNote({msg,err});setTimeout(()=>setNote(null),2600);};
+  const notify=useCallback((msg,err)=>{setNote({msg,err});setTimeout(()=>setNote(null),2600);},[]);
+
+  useEffect(()=>{
+    if(!bruger||!SB_READY) return;
+    const supabase=getSupabase();
+    if(!supabase) return;
+    let cancelled=false;
+    (async()=>{
+      setRemoteLoading(true);
+      try{
+        const [mcsRows,opgRows]=await Promise.all([
+          fetchAllRows(supabase,"mcs"),
+          fetchAllRows(supabase,"opgaver"),
+        ]);
+        if(!cancelled){
+          setMcs(mcsRows.map(normalizeMcFromDb));
+          setOpgaver(opgRows.map(normalizeOpgaveFromDb));
+        }
+      }catch(e){
+        if(!cancelled) notify(e.message||String(e),true);
+      }finally{
+        if(!cancelled) setRemoteLoading(false);
+      }
+    })();
+    return()=>{cancelled=true;};
+  },[bruger,notify]);
+
+  const hentDbBackup=useCallback(async()=>{
+    const supabase=getSupabase();
+    if(!supabase){notify("Supabase er ikke konfigureret",true);return;}
+    try{
+      const [mcsRows,opgRows]=await Promise.all([
+        fetchAllRows(supabase,"mcs"),
+        fetchAllRows(supabase,"opgaver"),
+      ]);
+      const blob=new Blob(
+        [JSON.stringify({mcs:mcsRows,opgaver:opgRows,eksporteret:new Date().toISOString()},null,2)],
+        {type:"application/json"}
+      );
+      const a=document.createElement("a");
+      a.href=URL.createObjectURL(blob);
+      a.download=`mcfleet-backup-${new Date().toISOString().slice(0,19).replace(/:/g,"-")}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      notify("Backup downloadet");
+    }catch(e){
+      notify(e.message||String(e),true);
+    }
+  },[notify]);
 
   const byLoc=useMemo(()=>{
     const m={}; LOCATIONS.forEach(l=>{m[l]=[];});
@@ -443,6 +504,9 @@ export default function App() {
 
       {/* Notification */}
       {note&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:9999,background:note.err?"#cc0000":"#22c55e",color:"#fff",padding:"11px 24px",borderRadius:10,fontWeight:700,fontSize:14,boxShadow:"0 4px 24px rgba(0,0,0,.6)",whiteSpace:"nowrap"}}>{note.msg}</div>}
+      {SB_READY&&bruger&&remoteLoading&&(
+        <div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",zIndex:9998,background:"#1e1e1e",color:"#bbb",padding:"10px 18px",borderRadius:10,fontSize:13,border:"1px solid #333",boxShadow:"0 4px 20px rgba(0,0,0,.5)"}}>Henter data fra server…</div>
+      )}
 
       {/* Sidebar overlay (mobile) */}
       {sidebarOpen&&<div className="mobile-only" onClick={()=>setSidebarOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",zIndex:199}}/>}
@@ -469,6 +533,10 @@ export default function App() {
             <div style={{fontSize:13,fontWeight:600,color:"#fff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{bruger.navn}</div>
             <div style={{fontSize:11,color:bruger.rolle==="admin"?"#f87171":"#60a5fa"}}>{bruger.rolle==="admin"?"Admin":"Bruger"}</div>
           </div>
+          {SB_READY&&isAdmin&&(
+            <button type="button" onClick={hentDbBackup} disabled={remoteLoading} title="Download database-backup (JSON)"
+              style={{background:"none",border:"none",color:remoteLoading?"#444":"#a78bfa",cursor:remoteLoading?"default":"pointer",fontSize:18,padding:"4px",lineHeight:1}} className="tap">💾</button>
+          )}
           <button onClick={logout} title="Log ud" style={{background:"none",border:"none",color:"#666",cursor:"pointer",fontSize:18,padding:"4px",lineHeight:1}} className="tap">⏻</button>
         </div>
       </div>

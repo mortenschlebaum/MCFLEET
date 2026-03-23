@@ -1,0 +1,10 @@
+# Dependencies — skal installeres med npm install (ikke committes)
+mcfleet/node_modules/
+
+# Build output
+mcfleet/build/
+
+# Lokale env-filer
+.env
+.env.local
+.env.*.local

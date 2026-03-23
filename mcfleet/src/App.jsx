@@ -656,7 +656,7 @@ const genSlutseddel = (mc, køber) => {
     // Motorcyklen skal synes — præ-udfyldt Nej
     box(M,y,false); txt("Ja",M+5,y,8);
     box(M+16,y,true); txt("Nej",M+21,y,8);
-    box(col2,y,false); txt("Ja",col2+5,y,8);
+    box(col2,y,true); txt("Ja",col2+5,y,8);
     y+=8;
     txt("Synsrapport udleveret til køber",M,y,7.5,false,[80,80,80]);
     txt("Evt. rapportnr.:",M+55,y,7.5,false,[80,80,80]);
@@ -2052,9 +2052,9 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
   const [køberForm, setKøberForm] = React.useState({
     navn:"", adresse:"", postby:"", telefon:"", email:"", pris:"", km:"",
     s1:"nej", s2:"nej", s3:"nej", s4:"nej", s5:"skolekørsel",
-    s6:"nej", s6b:"nej", s7:"nej", s8:"ja", s9:"nej",
+    s6:"nej", s6b:"nej", s7:"nej", s8:"nej", s9:"nej",
     proevekørt:"ja",
-    forsForsikrAnsvar:true, forsForsikrKasko:false,
+    forsForsikrAnsvar:false, forsForsikrKasko:true,
     forsPolicenr:"", forsTegnetI:"Lokal forsikring",
   });
 

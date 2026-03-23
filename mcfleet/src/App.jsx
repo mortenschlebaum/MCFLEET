@@ -1072,6 +1072,11 @@ export default function App() {
         setLoading(false);
       }, 15000);
       try {
+        // #region agent log
+        const _t0=Date.now();
+        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:load-start',message:'Load start',data:{hasCachedUser:!!localStorage.getItem('mcfleet_bruger')},runId:'run1',hypothesisId:'A',timestamp:_t0})}).catch(()=>{});
+        // #endregion
+
         // ── FASE 1: Kritisk data — brugere + MC'er (viser appen hurtigst muligt) ──
         const [dbBrugere, dbMcs] = await Promise.all([
           db("brugere?order=id"),
@@ -1079,6 +1084,10 @@ export default function App() {
             db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log&order=id")
           ),
         ]);
+        // #region agent log
+        const _t1=Date.now();
+        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:fase1-done',message:'Fase 1 done (brugere+mcs)',data:{msMcs:_t1-_t0,mcCount:dbMcs.length,brugerCount:dbBrugere.length},runId:'run1',hypothesisId:'A',timestamp:_t1})}).catch(()=>{});
+        // #endregion
         setMcs(dbMcs.length>0 ? dbMcs.map(mcFromDb) : INIT_MC);
 
         // Valider login og sæt loading=false så appen vises STRAKS
@@ -1096,11 +1105,16 @@ export default function App() {
         setLoading(false); // ← Vis appen nu! Resten loader i baggrunden
 
         // ── FASE 2: Sekundær data — loader i baggrunden ──
+        const _t2=Date.now();
         const [dbFak, dbYd, dbLok] = await Promise.all([
           db("fakturaer?order=id"),
           db("ydelser?order=id"),
           db("lokationer?order=id"),
         ]);
+        // #region agent log
+        const _t3=Date.now();
+        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:fase2-done',message:'Fase 2 done (fak+yd+lok)',data:{msFase2:_t3-_t2,fakCount:dbFak.length,ydCount:dbYd.length,lokCount:dbLok.length},runId:'run1',hypothesisId:'B',timestamp:_t3})}).catch(()=>{});
+        // #endregion
         const dbFakVar = dbFak;
         const dbYdVar = dbYd;
         const dbLokVar = dbLok;
@@ -1108,8 +1122,12 @@ export default function App() {
         setYdelser(dbYdVar.length>0 ? dbYdVar.map(ydFromDb) : INIT_YDELSER);
 
         // Opgaver separat — fejl her stopper ikke resten, prøv evt. igen ved timeout
+        const _t4=Date.now();
         try {
           const dbOpg = await db("opgaver?order=id");
+          // #region agent log
+          fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:opgaver-done',message:'Opgaver hentet',data:{msOpgaver:Date.now()-_t4,opgCount:dbOpg.length,totalMs:Date.now()-_t0},runId:'run1',hypothesisId:'E',timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
           setOpgaver(dbOpg.map(opgFromDb));
         } catch(e) {
           console.error("Opgaver load fejl:", e);

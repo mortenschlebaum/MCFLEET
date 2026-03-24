@@ -1109,12 +1109,19 @@ export default function App() {
         fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:fase1-done',message:'Fase1 DB hentet',data:{dbMcsLen:dbMcs.length,dbBrugereLen:dbBrugere.length,firstMcLoc:dbMcs[0]?.location??'(tom)',usesInitMc:dbMcs.length===0},runId:'run3',hypothesisId:'B',timestamp:Date.now()})}).catch(()=>{});
         // #endregion
 
-        // Gem i sessionStorage-cache til næste load
-        try {
-          sessionStorage.setItem('mcfleet_mcs', JSON.stringify({ts: Date.now(), data: dbMcs}));
-        } catch(e) {}
+        // Gem i sessionStorage-cache til næste load (kun essentielle felter — fotos udelades for at undgå QuotaExceededError)
+        const mcsCacheData = dbMcs.map(r=>({id:r.id,mc_nr:r.mc_nr,reg:r.reg,stel:r.stel,gps:r.gps,syn:r.syn,km:r.km,location:r.location,beskrivelse:r.beskrivelse,foerste_reg:r.foerste_reg,naeste_syn:r.naeste_syn,lokations_log:r.lokations_log,km_log:r.km_log}));
+        // #region agent log
+        const _cacheJson = JSON.stringify({ts:Date.now(),data:mcsCacheData});
+        let _cacheErr=null;
+        try { sessionStorage.setItem('mcfleet_mcs',_cacheJson); } catch(e) { _cacheErr=e.name+': '+e.message; }
+        const _withNaeste=dbMcs.filter(r=>r.naeste_syn&&r.naeste_syn!=="").length;
+        const _mappedFull=dbMcs.length>0?dbMcs.map(mcFromDb):INIT_MC;
+        const _ovCount=_mappedFull.filter(m=>!erSolgt(m)&&synStatus(m)==="overskredet").length;
+        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:cache-save',message:'Cache gem forsøg',data:{jsonKb:Math.round(_cacheJson.length/1024),cacheErr:_cacheErr,withNaesteSyn:_withNaeste,totalMcs:dbMcs.length,overskredtCount:_ovCount},runId:'run4',hypothesisId:'E',timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
 
-        setMcs(dbMcs.length>0 ? dbMcs.map(mcFromDb) : INIT_MC);
+        setMcs(_mappedFull);
 
         // Valider login og sæt loading=false
         const indlæsteBrugere0 = dbBrugere.length===0 ? INIT_USERS : dbBrugere.map(brugerFromDb);

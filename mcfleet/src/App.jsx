@@ -1031,7 +1031,6 @@ export default function App() {
   });
   const [loginFejl,setLoginFejl]=useState("");
   const [loading,setLoading]=useState(true);
-  const loadGen=React.useRef(0); // Forhindrer race-conditions ved samtidige loads (F5-spam)
 
   // ── App state ──
   const [mcs,setMcs]=useState([]);
@@ -1066,11 +1065,8 @@ export default function App() {
 
   // ── Indlæs alt data fra Supabase ved opstart ──
   useEffect(()=>{
-    const myGen = ++loadGen.current; // Unik generation for dette load — afbryder forældede parallelle loads
     const load = async () => {
-      // Garantér at loading altid stopper — selv ved uventet fejl (øget til 30 sek)
       const loadTimeout = setTimeout(() => {
-        if(loadGen.current!==myGen) return;
         console.warn("Load timeout — tvinger loading=false");
         setLoading(false);
       }, 30000);
@@ -1080,7 +1076,6 @@ export default function App() {
         try {
           const cached = JSON.parse(sessionStorage.getItem('mcfleet_mcs') || 'null');
           if (cached && cached.ts && Date.now() - cached.ts < MC_CACHE_TTL && cached.data?.length > 0) {
-            if(loadGen.current!==myGen) return; // Forældet load — afbryd
             setMcs(cached.data.map(mcFromDb));
             clearTimeout(loadTimeout);
             setLoading(false);
@@ -1090,13 +1085,10 @@ export default function App() {
         // ── FASE 1: Kritisk data — brugere + MC'er (opdaterer baggrunden) ──
         const [dbBrugere, dbMcs] = await Promise.all([
           db("brugere?order=id"),
-          // Fallback inkluderer naeste_syn men dropper de tunge array-felter (fotos/lokations_log/km_log)
           db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn&order=id").catch(()=>
             db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,foerste_reg,naeste_syn&order=id")
           ),
         ]);
-
-        if(loadGen.current!==myGen) return; // Forældet load — afbryd inden vi overskriver state
 
         // Gem i sessionStorage-cache (kun essentielle felter — fotos udelades for at undgå QuotaExceededError)
         try {
@@ -1133,8 +1125,6 @@ export default function App() {
             return [];
           }),
         ]);
-
-        if(loadGen.current!==myGen) return; // Forældet load — afbryd
 
         const dbFakVar = dbFak;
         const dbYdVar = dbYd;

@@ -418,6 +418,7 @@ const genSlutseddel = (mc, køber) => {
     s.onerror = reject;
     document.head.appendChild(s);
   });
+  const _filename = `slutseddel_${mc.reg||"mc"}.pdf`;
 
   // Konverter tal til danske ord
   const talTilTekst = (n) => {
@@ -738,8 +739,10 @@ const genSlutseddel = (mc, køber) => {
     doc.setFontSize(7);doc.setTextColor(160,160,160);doc.setFont("helvetica","normal");
     doc.text("Lisbeths Køreskole ApS  ·  Vranderupvej 15, 6000 Kolding  ·  Tlf. 29414249",W/2,H-4,{align:"center"});
 
-    doc.save(`slutseddel_${mc.reg||"mc"}.pdf`);
-  }).catch(e => alert("PDF fejl: "+e.message));
+    const base64 = doc.output('datauristring').split(',')[1];
+    doc.save(_filename);
+    return { base64, filename: _filename };
+  }).catch(e => { alert("PDF fejl: "+e.message); return null; });
 };
 
 
@@ -2139,6 +2142,12 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
     }
   }, [mc?.id]);
   const st=synStatus(mc);
+  const [sigStatus, setSigStatus]=React.useState(null);
+  React.useEffect(()=>{
+    db("signatures?mc_id=eq."+mc.id+"&order=created_at.desc&limit=1")
+      .then(rows=>setSigStatus(rows.length>0?rows[0]:null))
+      .catch(()=>{});
+  },[mc.id]);
   const [visOpgForm,setVisOpgForm]=React.useState(false);
   const [opgForm,setOpgForm]=React.useState({beskrivelse:"",senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
 
@@ -2188,7 +2197,21 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
         <button onClick={()=>{setKøberForm(p=>({...p,km:String(mc.km||"")}));setSlutseddelModal(true);}} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📄 Slutseddel</button>
       </div>
 
-
+      {sigStatus&&(
+        <div style={{marginBottom:14,padding:"10px 14px",borderRadius:8,display:"inline-flex",alignItems:"center",gap:8,
+          background:sigStatus.status==="signed"?"#0a2d1a":"#2d1f00",
+          border:`1px solid ${sigStatus.status==="signed"?"#22a06b55":"#e6a81755"}`}}>
+          <span style={{fontSize:14}}>{sigStatus.status==="signed"?"✅":"✍️"}</span>
+          <div>
+            <div style={{color:sigStatus.status==="signed"?"#6ee7b7":"#ffd166",fontSize:13,fontWeight:600}}>
+              {sigStatus.status==="signed"?"Slutseddel underskrevet":"Afventer underskrift"}
+            </div>
+            <div style={{color:"#888",fontSize:11,marginTop:1}}>
+              {sigStatus.buyer_email} · {new Date(sigStatus.created_at).toLocaleDateString("da-DK")}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="detail-grid" style={{display:"grid",gridTemplateColumns:"300px 1fr",gap:16}}>
         {/* MC card */}
@@ -2666,15 +2689,42 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
           })()}
 
           <div style={{display:"flex",gap:10,marginTop:16}}>
-            <button onClick={()=>{
+            <button onClick={async()=>{
               if(!køberForm.navn||!køberForm.adresse||!køberForm.postby||!køberForm.pris){
                 alert("Udfyld venligst navn, adresse, postnr./by og købesum");
                 return;
               }
-              genSlutseddel(mc, køberForm);
+              if(!køberForm.email){
+                alert("Email er påkrævet for digital underskrift");
+                return;
+              }
+              const result = await genSlutseddel(mc, køberForm);
+              if(!result) return;
               setSlutseddelModal(false);
+              notify("Sender til digital underskrift...");
+              try {
+                const resp = await fetch("/.netlify/functions/firma-sign", {
+                  method:"POST",
+                  headers:{"Content-Type":"application/json"},
+                  body:JSON.stringify({
+                    pdfBase64: result.base64,
+                    buyerEmail: køberForm.email,
+                    buyerName: køberForm.navn,
+                    mcReg: mc.reg,
+                    mcId: mc.id,
+                  }),
+                });
+                const data = await resp.json();
+                if(data.success) {
+                  notify("Slutseddel sendt til underskrift! Tjek email.");
+                } else {
+                  notify("Fejl ved afsendelse: "+(data.error||"ukendt fejl"));
+                }
+              } catch(e) {
+                notify("Kunne ikke sende til underskrift: "+e.message);
+              }
             }} style={{...btnRed,flex:1,justifyContent:"center",padding:"12px"}}>
-              ⬇ Generer PDF
+              ✍ Generer og send til underskrift
             </button>
             <button onClick={()=>setSlutseddelModal(false)} style={{...btnGhost,padding:"12px 16px"}}>Annuller</button>
           </div>

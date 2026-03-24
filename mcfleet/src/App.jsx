@@ -1070,7 +1070,7 @@ export default function App() {
       const loadTimeout = setTimeout(() => {
         console.warn("Load timeout — tvinger loading=false");
         setLoading(false);
-      }, 15000);
+      }, 30000);
       try {
         // #region agent log
         const _t0=Date.now();
@@ -1091,12 +1091,29 @@ export default function App() {
           }
         } catch(e) {}
 
-        // ── FASE 1: Kritisk data — brugere + MC'er (opdaterer baggrunden) ──
+        // ── FASE 1: Kritisk data — brugere + MC'er ──
+        // Brug simpel query som primær (undgå 500 ved cold-start), med retry
+        const fetchMcs = async (attempt=1) => {
+          try {
+            return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn&order=id");
+          } catch(e1) {
+            // #region agent log
+            console.warn("[MCFLEET-DEBUG] mcs query attempt "+attempt+" failed:", e1.message);
+            // #endregion
+            try {
+              return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log&order=id");
+            } catch(e2) {
+              if(attempt < 3) {
+                await new Promise(r=>setTimeout(r, 2000*attempt));
+                return fetchMcs(attempt+1);
+              }
+              throw e2;
+            }
+          }
+        };
         const [dbBrugere, dbMcs] = await Promise.all([
           db("brugere?order=id"),
-          db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn&order=id").catch(()=>
-            db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log&order=id")
-          ),
+          fetchMcs(),
         ]);
         // #region agent log
         console.warn("[MCFLEET-DEBUG] Fase 1 done", {mcCount:dbMcs.length, brugerCount:dbBrugere.length, ms:Date.now()-_t0});
@@ -1132,12 +1149,11 @@ export default function App() {
           db("fakturaer?order=id"),
           db("ydelser?order=id"),
           db("lokationer?order=id"),
-          db("opgaver?order=id").catch(async e => {
-            // Timeout-retry med limit
-            if(e.message?.includes("57014")||e.message?.includes("timeout")) {
-              try { return await db("opgaver?order=id&limit=200"); } catch(e2) { return []; }
+          db("opgaver?order=id").catch(async () => {
+            await new Promise(r=>setTimeout(r,3000));
+            try { return await db("opgaver?order=id"); } catch(e2) {
+              try { return await db("opgaver?order=id&limit=200"); } catch(e3) { return []; }
             }
-            return [];
           }),
         ]);
 

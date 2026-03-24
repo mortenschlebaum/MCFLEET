@@ -1274,6 +1274,23 @@ export default function App() {
     };
   },[mcs,fakturaer]);
 
+  const planData=useMemo(()=>{
+    const EKSKLUDER=["Lager / Depot","Solgte MC'er","MC til salg"];
+    return LOCATIONS
+      .filter(navn=>!EKSKLUDER.includes(navn))
+      .map(navn=>{
+        const fakI=fakturaer.filter(f=>f.afdeling===navn);
+        const seneste=fakI.length>0
+          ? fakI.reduce((a,b)=>a.dato>b.dato?a:b).dato
+          : null;
+        const dage=seneste
+          ? Math.floor((Date.now()-new Date(seneste))/86400000)
+          : null;
+        return {navn,seneste,dage};
+      })
+      .sort((a,b)=>(b.dage??Infinity)-(a.dage??Infinity));
+  },[fakturaer]);
+
   // ── URL HASH NAVIGATION ──
   // Hash-format: #oversigt | #fakturaer | #opgaver | #administration | #brugere
   //              #mc-{id}  | #mc-{id}-rediger | #mc-{id}-faktura | #mc-{id}-faktura-{fakId}
@@ -1626,6 +1643,7 @@ export default function App() {
   const navItems=[
     {id:"oversigt",icon:"🏍",label:"Oversigt"},
     {id:"opgaver",icon:"📋",label:"Opgaver"},
+    {id:"planlægning",icon:"📅",label:"Planlægning"},
     {id:"fakturaer",icon:"🧾",label:"Fakturaer"},
     {id:"administration",icon:"⚙️",label:"Administration"},
     ...(isAdmin?[{id:"brugere",icon:"👥",label:"Brugere"}]:[]),
@@ -1888,6 +1906,39 @@ export default function App() {
             {/* ── OPGAVER ── */}
             {nav==="opgaver"&&(
               <OpgaverView opgaver={opgaver} setOpgaver={setOpgaver} locations={lokationer.map(l=>l.navn)} notify={notify} visForm={visOpgaveForm} setVisForm={setVisOpgaveForm} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt} onFotoKlik={setFotoModal}/>
+            )}
+
+            {/* ── PLANLÆGNING ── */}
+            {nav==="planlægning"&&(
+              <div style={{padding:"0 16px 32px"}}>
+                <h2 style={{color:"#fff",fontSize:20,fontWeight:700,margin:"24px 0 4px"}}>Planlægning</h2>
+                <p style={{color:"#888",fontSize:13,marginBottom:24}}>Oversigt over hvornår der sidst er lavet en faktura i hver afdeling. Sorteret efter længst tid siden besøg.</p>
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  {planData.map(({navn,seneste,dage})=>{
+                    const farve=dage===null?"#555":dage>60?"#cc0000":dage>30?"#e6a817":"#22a06b";
+                    const badge=dage===null
+                      ? {bg:"#2a2a2a",txt:"#888",label:"Ingen fakturaer"}
+                      : dage>60
+                        ? {bg:"#2d0a0a",txt:"#ff6b6b",label:`${dage} dage siden`}
+                        : dage>30
+                          ? {bg:"#2d1f00",txt:"#ffd166",label:`${dage} dage siden`}
+                          : {bg:"#0a2d1a",txt:"#6ee7b7",label:`${dage} dage siden`};
+                    return (
+                      <div key={navn} style={{background:"#1a1a1a",borderRadius:10,padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",borderLeft:`4px solid ${farve}`}}>
+                        <div>
+                          <div style={{color:"#fff",fontWeight:600,fontSize:15}}>{navn}</div>
+                          <div style={{color:"#888",fontSize:12,marginTop:3}}>
+                            {seneste ? `Seneste faktura: ${seneste.split("-").reverse().join("-")}` : "Ingen fakturaer registreret"}
+                          </div>
+                        </div>
+                        <div style={{background:badge.bg,color:badge.txt,borderRadius:20,padding:"5px 14px",fontSize:13,fontWeight:600,whiteSpace:"nowrap"}}>
+                          {badge.label}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             )}
 
             {/* ── BRUGERE (kun admin) ── */}

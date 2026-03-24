@@ -1072,12 +1072,26 @@ export default function App() {
         setLoading(false);
       }, 15000);
       try {
+        // #region agent log
+        const _loadId = Date.now();
+        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:load-start',message:'load() kørt',data:{loadId:_loadId,hasBruger:!!localStorage.getItem('mcfleet_bruger'),cacheRaw:sessionStorage.getItem('mcfleet_mcs')?.slice(0,120)},runId:'run3',hypothesisId:'D',timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+
         // ── CACHE: Vis MC'er øjeblikkeligt fra sessionStorage hvis tilgængeligt ──
         const MC_CACHE_TTL = 5 * 60 * 1000; // 5 min
         try {
           const cached = JSON.parse(sessionStorage.getItem('mcfleet_mcs') || 'null');
+          // #region agent log
+          const _cacheFirstLoc = cached?.data?.[0]?.location ?? '(mangler)';
+          fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:cache-check',message:'Cache tjek',data:{hasCached:!!cached,cacheLen:cached?.data?.length??0,cacheAgeSec:cached?.ts?Math.round((Date.now()-cached.ts)/1000):null,firstLoc:_cacheFirstLoc,valid:!!(cached&&cached.ts&&Date.now()-cached.ts<MC_CACHE_TTL&&cached.data?.length>0)},runId:'run3',hypothesisId:'C',timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
           if (cached && cached.ts && Date.now() - cached.ts < MC_CACHE_TTL && cached.data?.length > 0) {
-            setMcs(cached.data.map(mcFromDb));
+            const mappedMcs = cached.data.map(mcFromDb);
+            // #region agent log
+            const noLoc=mappedMcs.filter(m=>!m.location).length;
+            fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:cache-hit',message:'Cache HIT — viser cached data',data:{mappedCount:mappedMcs.length,noLocationCount:noLoc,sample:mappedMcs.slice(0,3).map(m=>({reg:m.reg,loc:m.location}))},runId:'run3',hypothesisId:'A',timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
+            setMcs(mappedMcs);
             clearTimeout(loadTimeout);
             setLoading(false);
           }
@@ -1090,6 +1104,10 @@ export default function App() {
             db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log&order=id")
           ),
         ]);
+
+        // #region agent log
+        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:fase1-done',message:'Fase1 DB hentet',data:{dbMcsLen:dbMcs.length,dbBrugereLen:dbBrugere.length,firstMcLoc:dbMcs[0]?.location??'(tom)',usesInitMc:dbMcs.length===0},runId:'run3',hypothesisId:'B',timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
 
         // Gem i sessionStorage-cache til næste load
         try {

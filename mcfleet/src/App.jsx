@@ -439,7 +439,7 @@ const genSlutseddel = (mc, køber) => {
     return (m===1?"en":u1000(m))+"million"+(m>1?"er":"")+(r?talTilTekst(r):"");
   };
 
-  loadJsPDF().then(JsPDF => {
+  return loadJsPDF().then(JsPDF => {
     const doc = new JsPDF({orientation:"portrait", unit:"mm", format:"a4"});
     const W=210, H=297, M=14, CW=W-M*2;
     const col2 = M + CW/2 + 3;

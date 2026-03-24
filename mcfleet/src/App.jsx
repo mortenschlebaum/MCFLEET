@@ -1101,7 +1101,7 @@ export default function App() {
             console.warn("[MCFLEET-DEBUG] mcs query attempt "+attempt+" failed:", e1.message);
             // #endregion
             try {
-              return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log&order=id");
+              return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log,foerste_reg,naeste_syn&order=id");
             } catch(e2) {
               if(attempt < 3) {
                 await new Promise(r=>setTimeout(r, 2000*attempt));

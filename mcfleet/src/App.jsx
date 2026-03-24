@@ -1072,11 +1072,6 @@ export default function App() {
         setLoading(false);
       }, 30000);
       try {
-        // #region agent log
-        const _t0=Date.now();
-        console.warn("[MCFLEET-DEBUG] Load start", {hasCache:!!sessionStorage.getItem('mcfleet_mcs'),hasUser:!!localStorage.getItem('mcfleet_bruger')});
-        // #endregion
-
         // ── CACHE: Vis MC'er øjeblikkeligt fra sessionStorage hvis tilgængeligt ──
         const MC_CACHE_TTL = 5 * 60 * 1000; // 5 min
         try {
@@ -1085,21 +1080,14 @@ export default function App() {
             setMcs(cached.data.map(mcFromDb));
             clearTimeout(loadTimeout);
             setLoading(false);
-            // #region agent log
-            console.warn("[MCFLEET-DEBUG] Cache hit", {cacheAge:Date.now()-cached.ts, mcCount:cached.data.length});
-            // #endregion
           }
         } catch(e) {}
 
         // ── FASE 1: Kritisk data — brugere + MC'er ──
-        // Brug simpel query som primær (undgå 500 ved cold-start), med retry
         const fetchMcs = async (attempt=1) => {
           try {
             return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn&order=id");
           } catch(e1) {
-            // #region agent log
-            console.warn("[MCFLEET-DEBUG] mcs query attempt "+attempt+" failed:", e1.message);
-            // #endregion
             try {
               return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log,foerste_reg,naeste_syn&order=id");
             } catch(e2) {
@@ -1115,9 +1103,6 @@ export default function App() {
           db("brugere?order=id"),
           fetchMcs(),
         ]);
-        // #region agent log
-        console.warn("[MCFLEET-DEBUG] Fase 1 done", {mcCount:dbMcs.length, brugerCount:dbBrugere.length, ms:Date.now()-_t0});
-        // #endregion
 
         // Gem i sessionStorage-cache til næste load
         try {
@@ -1130,10 +1115,6 @@ export default function App() {
         const indlæsteBrugere0 = dbBrugere.length===0 ? INIT_USERS : dbBrugere.map(brugerFromDb);
         setBrugere(indlæsteBrugere0);
         setBruger(prev => {
-          // #region agent log
-          const friskMatch = indlæsteBrugere0.find(b => String(b.id)===String(prev?.id)||b.brugernavn===prev?.brugernavn);
-          console.warn("[MCFLEET-DEBUG] Bruger validation", {prevId:prev?.id, prevNavn:prev?.brugernavn, foundMatch:!!friskMatch, brugerCount:indlæsteBrugere0.length});
-          // #endregion
           if(!prev) return null;
           const frisk = indlæsteBrugere0.find(b => String(b.id)===String(prev.id)||b.brugernavn===prev.brugernavn);
           if(!frisk) { localStorage.removeItem("mcfleet_bruger"); return null; }
@@ -1195,9 +1176,6 @@ export default function App() {
           await db("ydelser",{method:"POST",body:JSON.stringify(INIT_YDELSER.map(ydToDb)),prefer:"return=minimal"});
         }
       } catch(e){
-        // #region agent log
-        console.error("[MCFLEET-DEBUG] DB LOAD FEJL:", e.message);
-        // #endregion
         console.error("DB load fejl:",e);
         clearTimeout(loadTimeout);
         setLoading(false);

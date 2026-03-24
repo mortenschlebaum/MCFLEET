@@ -1031,6 +1031,7 @@ export default function App() {
   });
   const [loginFejl,setLoginFejl]=useState("");
   const [loading,setLoading]=useState(true);
+  const loadGen=React.useRef(0); // Forhindrer race-conditions ved samtidige loads (F5-spam)
 
   // ── App state ──
   const [mcs,setMcs]=useState([]);
@@ -1065,33 +1066,22 @@ export default function App() {
 
   // ── Indlæs alt data fra Supabase ved opstart ──
   useEffect(()=>{
+    const myGen = ++loadGen.current; // Unik generation for dette load — afbryder forældede parallelle loads
     const load = async () => {
-      // Garantér at loading altid stopper — selv ved uventet fejl
+      // Garantér at loading altid stopper — selv ved uventet fejl (øget til 30 sek)
       const loadTimeout = setTimeout(() => {
+        if(loadGen.current!==myGen) return;
         console.warn("Load timeout — tvinger loading=false");
         setLoading(false);
-      }, 15000);
+      }, 30000);
       try {
-        // #region agent log
-        const _loadId = Date.now();
-        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:load-start',message:'load() kørt',data:{loadId:_loadId,hasBruger:!!localStorage.getItem('mcfleet_bruger'),cacheRaw:sessionStorage.getItem('mcfleet_mcs')?.slice(0,120)},runId:'run3',hypothesisId:'D',timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-
         // ── CACHE: Vis MC'er øjeblikkeligt fra sessionStorage hvis tilgængeligt ──
         const MC_CACHE_TTL = 5 * 60 * 1000; // 5 min
         try {
           const cached = JSON.parse(sessionStorage.getItem('mcfleet_mcs') || 'null');
-          // #region agent log
-          const _cacheFirstLoc = cached?.data?.[0]?.location ?? '(mangler)';
-          fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:cache-check',message:'Cache tjek',data:{hasCached:!!cached,cacheLen:cached?.data?.length??0,cacheAgeSec:cached?.ts?Math.round((Date.now()-cached.ts)/1000):null,firstLoc:_cacheFirstLoc,valid:!!(cached&&cached.ts&&Date.now()-cached.ts<MC_CACHE_TTL&&cached.data?.length>0)},runId:'run3',hypothesisId:'C',timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
           if (cached && cached.ts && Date.now() - cached.ts < MC_CACHE_TTL && cached.data?.length > 0) {
-            const mappedMcs = cached.data.map(mcFromDb);
-            // #region agent log
-            const noLoc=mappedMcs.filter(m=>!m.location).length;
-            fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:cache-hit',message:'Cache HIT — viser cached data',data:{mappedCount:mappedMcs.length,noLocationCount:noLoc,sample:mappedMcs.slice(0,3).map(m=>({reg:m.reg,loc:m.location}))},runId:'run3',hypothesisId:'A',timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
-            setMcs(mappedMcs);
+            if(loadGen.current!==myGen) return; // Forældet load — afbryd
+            setMcs(cached.data.map(mcFromDb));
             clearTimeout(loadTimeout);
             setLoading(false);
           }
@@ -1100,28 +1090,21 @@ export default function App() {
         // ── FASE 1: Kritisk data — brugere + MC'er (opdaterer baggrunden) ──
         const [dbBrugere, dbMcs] = await Promise.all([
           db("brugere?order=id"),
+          // Fallback inkluderer naeste_syn men dropper de tunge array-felter (fotos/lokations_log/km_log)
           db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn&order=id").catch(()=>
-            db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log&order=id")
+            db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,foerste_reg,naeste_syn&order=id")
           ),
         ]);
 
-        // #region agent log
-        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:fase1-done',message:'Fase1 DB hentet',data:{dbMcsLen:dbMcs.length,dbBrugereLen:dbBrugere.length,firstMcLoc:dbMcs[0]?.location??'(tom)',usesInitMc:dbMcs.length===0},runId:'run3',hypothesisId:'B',timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
+        if(loadGen.current!==myGen) return; // Forældet load — afbryd inden vi overskriver state
 
-        // Gem i sessionStorage-cache til næste load (kun essentielle felter — fotos udelades for at undgå QuotaExceededError)
-        const mcsCacheData = dbMcs.map(r=>({id:r.id,mc_nr:r.mc_nr,reg:r.reg,stel:r.stel,gps:r.gps,syn:r.syn,km:r.km,location:r.location,beskrivelse:r.beskrivelse,foerste_reg:r.foerste_reg,naeste_syn:r.naeste_syn,lokations_log:r.lokations_log,km_log:r.km_log}));
-        // #region agent log
-        const _cacheJson = JSON.stringify({ts:Date.now(),data:mcsCacheData});
-        let _cacheErr=null;
-        try { sessionStorage.setItem('mcfleet_mcs',_cacheJson); } catch(e) { _cacheErr=e.name+': '+e.message; }
-        const _withNaeste=dbMcs.filter(r=>r.naeste_syn&&r.naeste_syn!=="").length;
-        const _mappedFull=dbMcs.length>0?dbMcs.map(mcFromDb):INIT_MC;
-        const _ovCount=_mappedFull.filter(m=>!erSolgt(m)&&synStatus(m)==="overskredet").length;
-        fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b30fe9'},body:JSON.stringify({sessionId:'b30fe9',location:'App.jsx:cache-save',message:'Cache gem forsøg',data:{jsonKb:Math.round(_cacheJson.length/1024),cacheErr:_cacheErr,withNaesteSyn:_withNaeste,totalMcs:dbMcs.length,overskredtCount:_ovCount},runId:'run4',hypothesisId:'E',timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
+        // Gem i sessionStorage-cache (kun essentielle felter — fotos udelades for at undgå QuotaExceededError)
+        try {
+          const mcsCacheData = dbMcs.map(r=>({id:r.id,mc_nr:r.mc_nr,reg:r.reg,stel:r.stel,gps:r.gps,syn:r.syn,km:r.km,location:r.location,beskrivelse:r.beskrivelse,foerste_reg:r.foerste_reg,naeste_syn:r.naeste_syn,lokations_log:r.lokations_log,km_log:r.km_log}));
+          sessionStorage.setItem('mcfleet_mcs', JSON.stringify({ts:Date.now(),data:mcsCacheData}));
+        } catch(e) {}
 
-        setMcs(_mappedFull);
+        setMcs(dbMcs.length>0 ? dbMcs.map(mcFromDb) : INIT_MC);
 
         // Valider login og sæt loading=false
         const indlæsteBrugere0 = dbBrugere.length===0 ? INIT_USERS : dbBrugere.map(brugerFromDb);
@@ -1150,6 +1133,8 @@ export default function App() {
             return [];
           }),
         ]);
+
+        if(loadGen.current!==myGen) return; // Forældet load — afbryd
 
         const dbFakVar = dbFak;
         const dbYdVar = dbYd;

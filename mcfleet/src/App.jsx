@@ -1870,7 +1870,7 @@ export default function App() {
                       setMcs(p=>p.map(m=>String(m.id)===String(mcId)?{...m,foto:r.foto||"",fotos:nyFotos}:m));
                     }
                   }).catch(()=>{});
-                }} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor}/>;
+                }} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor} notify={notify}/>;
             })()}
 
             {/* ── REDIGER MC ── */}
@@ -2122,7 +2122,7 @@ export default function App() {
 
 // ── SUB COMPONENTS ────────────────────────────────────────────────────────────
 
-function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor}) {
+function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor,notify}) {
   const [kmInlineEdit, setKmInlineEdit] = React.useState(false);
   const [kmInlineVal, setKmInlineVal] = React.useState("");
   const [slutseddelModal, setSlutseddelModal] = React.useState(false);

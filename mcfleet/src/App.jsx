@@ -739,9 +739,10 @@ const genSlutseddel = (mc, køber) => {
     doc.setFontSize(7);doc.setTextColor(160,160,160);doc.setFont("helvetica","normal");
     doc.text("Lisbeths Køreskole ApS  ·  Vranderupvej 15, 6000 Kolding  ·  Tlf. 29414249",W/2,H-4,{align:"center"});
 
+    const totalPages = doc.internal.getNumberOfPages();
     const base64 = doc.output('datauristring').split(',')[1];
     doc.save(_filename);
-    return { base64, filename: _filename };
+    return { base64, filename: _filename, totalPages };
   }).catch(e => { alert("PDF fejl: "+e.message); return null; });
 };
 
@@ -2712,6 +2713,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                     buyerName: køberForm.navn,
                     mcReg: mc.reg,
                     mcId: mc.id,
+                    sigPage: result.totalPages,
                   }),
                 });
                 const data = await resp.json();

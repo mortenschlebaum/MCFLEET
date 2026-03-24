@@ -45,10 +45,11 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: JSON.stringify({ error: "Invalid JSON" }) };
   }
 
-  const { pdfBase64, buyerEmail, buyerName, mcReg, mcId } = payload;
+  const { pdfBase64, buyerEmail, buyerName, mcReg, mcId, sigPage } = payload;
   if (!pdfBase64 || !buyerEmail || !buyerName) {
     return { statusCode: 400, body: JSON.stringify({ error: "Missing pdfBase64, buyerEmail, or buyerName" }) };
   }
+  const lastPage = sigPage || 2;
 
   const buyer = splitName(buyerName);
 
@@ -84,15 +85,15 @@ exports.handler = async (event) => {
           {
             recipient_id: "temp_buyer",
             type: "signature",
-            page: 2,
-            x: 55, y: 92, width: 35, height: 5,
+            page: lastPage,
+            x: 55, y: 82, width: 35, height: 5,
             required: true,
           },
           {
             recipient_id: "temp_seller",
             type: "signature",
-            page: 2,
-            x: 5, y: 92, width: 35, height: 5,
+            page: lastPage,
+            x: 5, y: 82, width: 35, height: 5,
             required: true,
           },
         ],

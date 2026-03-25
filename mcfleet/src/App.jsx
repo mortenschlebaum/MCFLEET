@@ -118,6 +118,7 @@ const mcFromDb = r => ({
   foersteReg: r.foerste_reg||"",
   naesteSyn: r.naeste_syn||"",
   noter: r.noter||"",
+  type: r.type||"MC",
   lokationsLog: r.lokations_log||[], kmLog: r.km_log||[],
 });
 const mcToDb = m => {
@@ -127,6 +128,7 @@ const mcToDb = m => {
     beskrivelse: m.beskrivelse||"", foto: m.foto||"",
     fotos: m.fotos||[],
     noter: m.noter||"",
+    type: m.type||"MC",
     lokations_log: m.lokationsLog||[], km_log: m.kmLog||[],
   };
   if(m.foersteReg !== undefined) obj.foerste_reg = m.foersteReg||"";
@@ -1048,6 +1050,7 @@ export default function App() {
   const [note,setNote]=useState(null);
   const [search,setSearch]=useState("");
   const [filterLoc,setFilterLoc]=useState("Alle");
+  const [filterType,setFilterType]=useState("MC");
   const [mcModal,setMcModal]=useState(null);
   const [editMc,setEditMc]=useState(null);
   const [nyFak,setNyFak]=useState(null);
@@ -1093,10 +1096,10 @@ export default function App() {
         // ── FASE 1: Kritisk data — brugere + MC'er ──
         const fetchMcs = async (attempt=1) => {
           try {
-            return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn,noter&order=id");
+            return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn,noter,type&order=id");
           } catch(e1) {
             try {
-              return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log,foerste_reg,naeste_syn,noter&order=id");
+              return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log,foerste_reg,naeste_syn,noter,type&order=id");
             } catch(e2) {
               if(attempt < 3) {
                 await new Promise(r=>setTimeout(r, 2000*attempt));
@@ -1175,7 +1178,7 @@ export default function App() {
             }catch(e){ console.error("Seed fejl MC",mc.id,e); }
           }
           // Hent dem tilbage efter seed
-          const seeded = await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn,noter&order=id");
+          const seeded = await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn,noter,type&order=id");
           setMcs(seeded.map(mcFromDb));
         }
         // Seed ydelser hvis DB er tom
@@ -1267,18 +1270,18 @@ export default function App() {
   },[mcs,lokationer]);
 
   const filteredByLoc=useMemo(()=>{
-    // Fjern mellemrum fra søgeord OG det felt der søges i — så "dd70407" og "DD 70 407" begge virker
     const q=search.toLowerCase().replace(/\s+/g,"");
     const out={};
     const alleLocs=[...new Set([...lokationer.map(l=>l.navn),...Object.keys(byLoc)])];
     alleLocs.forEach(loc=>{
       let list=byLoc[loc]||[];
       if(filterLoc!=="Alle"&&filterLoc!==loc){out[loc]=[];return;}
+      if(filterType!=="Alle") list=list.filter(mc=>(mc.type||"MC")===filterType);
       if(q) list=list.filter(mc=>mc.reg.toLowerCase().replace(/\s+/g,"").includes(q)||mc.stel.toLowerCase().replace(/\s+/g,"").includes(q)||(mc.gps||"").toLowerCase().replace(/\s+/g,"").includes(q)||String(mc.mcNr).includes(q)||(mc.beskrivelse||"").toLowerCase().replace(/\s+/g,"").includes(q));
       out[loc]=[...list].sort((a,b)=>Number(a.mcNr)-Number(b.mcNr));
     });
     return out;
-  },[byLoc,search,filterLoc]);
+  },[byLoc,search,filterLoc,filterType]);
 
   const harGPS = mc => !!(mc.gps && mc.gps.trim().length > 0);
 
@@ -1771,8 +1774,19 @@ export default function App() {
                   <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                     {stats.ov>0&&<div onClick={()=>setSynModal(true)} style={{background:"#a80000",borderRadius:6,padding:"5px 12px",fontSize:12,color:"#ffaaaa",fontWeight:600,cursor:"pointer",userSelect:"none"}} title="Klik for at se liste">⚠ {stats.ov} syn overskredet</div>}
                     {stats.uGPS>0&&<div onClick={()=>setGpsModal(true)} style={{background:"#1a3a1a",borderRadius:6,padding:"5px 12px",fontSize:12,color:"#86efac",fontWeight:600,cursor:"pointer",userSelect:"none"}} title="Klik for at se liste">📡 {stats.uGPS} uden GPS</div>}
-                    <div style={{background:"#a80000",borderRadius:6,padding:"5px 12px",fontSize:12,color:"#ffdddd",fontWeight:600}}>{stats.total} MC'er</div>
+                    <div style={{background:"#a80000",borderRadius:6,padding:"5px 12px",fontSize:12,color:"#ffdddd",fontWeight:600}}>{stats.total} {filterType==="Alle"?"køretøjer":filterType==="MC"?"MC'er":filterType==="Bil"?"biler":"trailere"}</div>
                   </div>
+                </div>
+
+                {/* Type filter */}
+                <div style={{display:"flex",gap:4,marginBottom:10}}>
+                  {["Alle","MC","Bil","Trailer"].map(t=>(
+                    <button key={t} onClick={()=>setFilterType(t)}
+                      style={{padding:"6px 14px",borderRadius:6,fontSize:12,fontWeight:700,cursor:"pointer",border:filterType===t?"1px solid #cc0000":"1px solid #444",
+                        background:filterType===t?"#cc0000":"#1a1a1a",color:filterType===t?"#fff":"#aaa",transition:"all 0.15s"}}>
+                      {t==="MC"?"🏍 MC":t==="Bil"?"🚗 Bil":t==="Trailer"?"🚛 Trailer":"Alle"}
+                    </button>
+                  ))}
                 </div>
 
                 {/* Search row */}
@@ -1780,7 +1794,11 @@ export default function App() {
                   <div style={{position:"relative",flex:"1 1 180px",minWidth:0}}>
                     <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",color:"#666",fontSize:13}}>🔍</span>
                     <input placeholder="Søg reg. nr., beskrivelse..." value={search} onChange={e=>setSearch(e.target.value)}
-                      style={{...inp,paddingLeft:34,background:"#1e1e1e",border:"1px solid #333",borderRadius:8,height:40,fontSize:13}}/>
+                      style={{...inp,paddingLeft:34,paddingRight:search?32:12,background:"#1e1e1e",border:"1px solid #333",borderRadius:8,height:40,fontSize:13}}/>
+                    {search&&(
+                      <button onClick={()=>setSearch("")}
+                        style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:"#888",fontSize:16,cursor:"pointer",padding:"2px 4px",lineHeight:1}}>✕</button>
+                    )}
                   </div>
                   <select value={filterLoc} onChange={e=>setFilterLoc(e.target.value)}
                     style={{...inp,width:"auto",flex:"0 0 auto",height:40,background:"#1e1e1e",border:"1px solid #333",fontSize:13,padding:"0 12px"}}>
@@ -1795,7 +1813,7 @@ export default function App() {
                       .map(l=><option key={l}>{l}</option>)}
                   </select>
                   <button onClick={()=>setPladeScanner(true)} style={{background:"#1a1a1a",border:"1px solid #444",color:"#fff",borderRadius:8,height:40,padding:"0 14px",fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",gap:6,whiteSpace:"nowrap",fontWeight:700}} title="Scan nummerplade">📷 Scan plade</button>
-                  <button style={{...btnRed,height:40,padding:"0 14px",fontSize:13}} onClick={()=>{const n={id:Date.now()+(Math.random()*1000|0),mcNr:"",reg:"",stel:"",gps:"",syn:todayStr,km:0,location:lokationer[0]?.navn||LOCATIONS[0],beskrivelse:"",_erNy:true};setEditMc(n);}}>+ MC</button>
+                  <button style={{...btnRed,height:40,padding:"0 14px",fontSize:13}} onClick={()=>{const n={id:Date.now()+(Math.random()*1000|0),mcNr:"",reg:"",stel:"",gps:"",syn:todayStr,km:0,location:lokationer[0]?.navn||LOCATIONS[0],beskrivelse:"",type:filterType!=="Alle"?filterType:"MC",_erNy:true};setEditMc(n);}}>+ Opret</button>
                 </div>
 
                 {/* Groups */}
@@ -1827,8 +1845,9 @@ export default function App() {
                                   style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",cursor:"pointer",overflow:"hidden",position:"relative",transition:"border-color 0.15s"}}>
                                   <div style={{position:"absolute",top:8,right:8,width:11,height:11,borderRadius:"50%",background:SC[st],boxShadow:`0 0 5px ${SC[st]}`}}/>
                                   {harGPS(mc)&&<div style={{position:"absolute",top:6,right:24,fontSize:12,lineHeight:1}} title={`GPS: ${mc.gps}`}>📡</div>}
+                                  {(mc.type||"MC")!=="MC"&&<div style={{position:"absolute",top:6,left:6,fontSize:9,background:"#333",color:"#ddd",padding:"1px 6px",borderRadius:4,fontWeight:700}}>{mc.type==="Bil"?"🚗 Bil":"🚛 Trailer"}</div>}
                                   <div style={{padding:"10px 10px 6px",fontSize:11,lineHeight:1.75,color:"#ccc"}}>
-                                    <div><span style={{color:"#666"}}>MC Nr: </span><strong style={{color:"#fff"}}>{mc.mcNr}</strong></div>
+                                    <div><span style={{color:"#666"}}>{(mc.type||"MC")==="MC"?"MC":"Nr"}: </span><strong style={{color:"#fff"}}>{mc.mcNr}</strong></div>
                                     <div><span style={{color:"#666"}}>Reg.nr: </span><strong style={{color:"#fff"}}>{mc.reg}</strong></div>
                                     <div style={{fontSize:10,color:"#888"}}>{mc.gps}</div>
                                     <div style={{fontSize:10,color:"#aaa",fontWeight:600,marginTop:2}}>{mc.beskrivelse}</div>
@@ -1885,7 +1904,7 @@ export default function App() {
                       setMcs(p=>p.map(m=>String(m.id)===String(mcId)?{...m,foto:r.foto||"",fotos:nyFotos}:m));
                     }
                   }).catch(()=>{});
-                }} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor} notify={notify} onUpdateNoter={(tekst)=>onUpdateNoter(liveMc.id,tekst)}/>;
+                }} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor} notify={notify} isAdmin={isAdmin} onUpdateNoter={(tekst)=>onUpdateNoter(liveMc.id,tekst)}/>;
             })()}
 
             {/* ── REDIGER MC ── */}
@@ -2137,7 +2156,7 @@ export default function App() {
 
 // ── SUB COMPONENTS ────────────────────────────────────────────────────────────
 
-function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onUpdateNoter,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor,notify}) {
+function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onUpdateNoter,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor,notify,isAdmin}) {
   const [kmInlineEdit, setKmInlineEdit] = React.useState(false);
   const [kmInlineVal, setKmInlineVal] = React.useState("");
   const [noteText, setNoteText] = React.useState(mc.noter||"");
@@ -2210,7 +2229,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
         <button onClick={()=>onEdit()} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>✏️ Rediger</button>
         <button onClick={onNyFaktura} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>🧾 Ny Faktura</button>
         <button onClick={()=>{setVisOpgForm(true);setTimeout(()=>document.getElementById(`mc-opg-sektion-${mc.id}`)?.scrollIntoView({behavior:"smooth",block:"end"}),50);}} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📋 Opgave</button>
-        <button onClick={()=>{setKøberForm(p=>({...p,km:String(mc.km||"")}));setSlutseddelModal(true);}} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📄 Slutseddel</button>
+        {isAdmin&&<button onClick={()=>{setKøberForm(p=>({...p,km:String(mc.km||"")}));setSlutseddelModal(true);}} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📄 Slutseddel</button>}
       </div>
 
       {sigStatus&&(
@@ -3564,7 +3583,7 @@ function RedigerMc({mc,setMc,onSave,onCancel,locations,inp,btnRed,btnGhost}) {
       />}
       <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
         <button onClick={onCancel} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>← Tilbage</button>
-        <h1 style={{margin:0,fontSize:20,fontWeight:700,color:"#fff"}}>{mc.reg||"Ny MC"}</h1>
+        <h1 style={{margin:0,fontSize:20,fontWeight:700,color:"#fff"}}>{mc.reg||("Ny "+(mc.type||"MC"))}</h1>
 
       </div>
 
@@ -3610,6 +3629,14 @@ function RedigerMc({mc,setMc,onSave,onCancel,locations,inp,btnRed,btnGhost}) {
           {mc.gps&&<div style={{fontSize:11,color:"#22c55e",marginTop:4}}>✓ {mc.gps}</div>}
         </div>
 
+        <div>
+          <label style={{display:"block",fontSize:11,color:"#777",letterSpacing:.8,marginBottom:4,fontWeight:600,textTransform:"uppercase"}}>KØRETØJSTYPE</label>
+          <select value={mc.type||"MC"} onChange={e=>setMc(p=>({...p,type:e.target.value}))} style={inp}>
+            <option value="MC">🏍 MC</option>
+            <option value="Bil">🚗 Bil</option>
+            <option value="Trailer">🚛 Trailer</option>
+          </select>
+        </div>
         <div>
           <label style={{display:"block",fontSize:11,color:"#777",letterSpacing:.8,marginBottom:4,fontWeight:600,textTransform:"uppercase"}}>LOKATION</label>
           <select value={mc.location} onChange={e=>setMc(p=>({...p,location:e.target.value}))} style={inp}>

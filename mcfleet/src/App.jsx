@@ -1836,7 +1836,7 @@ export default function App() {
                           <h2 style={{margin:0,fontSize:16,fontWeight:700,color:"#fff"}}>{loc} — {list.length}</h2>
                         </div>
                         {list.length===0?(
-                          <div style={{background:"#1a1a1a44",borderRadius:8,padding:"14px 16px",color:"#ffffff88",fontSize:13}}>Ingen MC'er</div>
+                          <div style={{background:"#1a1a1a44",borderRadius:8,padding:"14px 16px",color:"#ffffff88",fontSize:13}}>{filterType==="Bil"?"Ingen biler":filterType==="Trailer"?"Ingen trailere":"Ingen MC'er"}</div>
                         ):(
                           <div className="mobile-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}}>
                             {list.map(mc=>{

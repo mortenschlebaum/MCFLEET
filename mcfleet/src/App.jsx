@@ -1286,14 +1286,15 @@ export default function App() {
   const harGPS = mc => !!(mc.gps && mc.gps.trim().length > 0);
 
   const stats=useMemo(()=>{
-    const aktive=mcs.filter(m=>!erSolgt(m));
+    let aktive=mcs.filter(m=>!erSolgt(m));
+    if(filterType!=="Alle") aktive=aktive.filter(m=>(m.type||"MC")===filterType);
     return {
       total:aktive.length,
       ov:aktive.filter(m=>synStatus(m)==="overskredet").length,
       uGPS:aktive.filter(m=>!harGPS(m)).length,
       fakTotal:fakturaer.reduce((s,f)=>s+f.total,0),
     };
-  },[mcs,fakturaer]);
+  },[mcs,fakturaer,filterType]);
 
   const planData=useMemo(()=>{
     const EKSKLUDER=["Lager / Depot","Solgte MC'er","MC til salg"];

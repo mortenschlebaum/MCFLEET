@@ -720,8 +720,9 @@ const genSlutseddel = (mc, køber) => {
 
     ln(M,y,W-M,y); y+=4;
 
-    // ── HANDLEN INDGÅET ──
-    if(y>230){doc.addPage();y=15;}
+    // ── HANDLEN INDGÅET (altid ny side) ──
+    doc.addPage(); y=15;
+    const sigPageNum = doc.internal.getNumberOfPages();
     y = sektionHoved("Handlen indgået",y);
     y+=5;
     txt("Sted/dato/år (sælger)",M,y,7.5,false,[80,80,80]);
@@ -739,7 +740,7 @@ const genSlutseddel = (mc, køber) => {
     doc.setFontSize(7);doc.setTextColor(160,160,160);doc.setFont("helvetica","normal");
     doc.text("Lisbeths Køreskole ApS  ·  Vranderupvej 15, 6000 Kolding  ·  Tlf. 29414249",W/2,H-4,{align:"center"});
 
-    const totalPages = doc.internal.getNumberOfPages();
+    const totalPages = sigPageNum;
     const base64 = doc.output('datauristring').split(',')[1];
     doc.save(_filename);
     return { base64, filename: _filename, totalPages };

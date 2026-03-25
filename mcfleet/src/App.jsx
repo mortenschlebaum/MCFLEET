@@ -2247,7 +2247,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
             </div>
           </div>
           {sigStatus.envelope_id&&(
-            <a href={`https://app.firma.dev/signing-requests/${sigStatus.envelope_id}`} target="_blank" rel="noopener noreferrer"
+            <a href={`/.netlify/functions/firma-document?id=${sigStatus.envelope_id}`} target="_blank" rel="noopener noreferrer"
               style={{color:"#7cabff",fontSize:12,textDecoration:"none",padding:"5px 10px",borderRadius:6,border:"1px solid #7cabff33",background:"#1a2a4a",whiteSpace:"nowrap"}}>
               {sigStatus.status==="signed"?"📄 Åbn dokument":"📄 Se status"}
             </a>

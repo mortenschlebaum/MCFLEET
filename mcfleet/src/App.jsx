@@ -2214,18 +2214,24 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
       </div>
 
       {sigStatus&&(
-        <div style={{marginBottom:14,padding:"10px 14px",borderRadius:8,display:"inline-flex",alignItems:"center",gap:8,
-          background:sigStatus.status==="signed"?"#0a2d1a":"#2d1f00",
-          border:`1px solid ${sigStatus.status==="signed"?"#22a06b55":"#e6a81755"}`}}>
-          <span style={{fontSize:14}}>{sigStatus.status==="signed"?"✅":"✍️"}</span>
-          <div>
-            <div style={{color:sigStatus.status==="signed"?"#6ee7b7":"#ffd166",fontSize:13,fontWeight:600}}>
-              {sigStatus.status==="signed"?"Slutseddel underskrevet":"Afventer underskrift"}
+        <div style={{marginBottom:14,padding:"10px 14px",borderRadius:8,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",
+          background:sigStatus.status==="signed"?"#0a2d1a":sigStatus.status==="cancelled"?"#2d0a0a":sigStatus.status==="expired"?"#2d1a0a":"#2d1f00",
+          border:`1px solid ${sigStatus.status==="signed"?"#22a06b55":sigStatus.status==="cancelled"?"#cc000055":sigStatus.status==="expired"?"#cc660055":"#e6a81755"}`}}>
+          <span style={{fontSize:14}}>{sigStatus.status==="signed"?"✅":sigStatus.status==="cancelled"?"❌":sigStatus.status==="expired"?"⏰":"✍️"}</span>
+          <div style={{flex:1}}>
+            <div style={{color:sigStatus.status==="signed"?"#6ee7b7":sigStatus.status==="cancelled"?"#f87171":sigStatus.status==="expired"?"#ffa366":"#ffd166",fontSize:13,fontWeight:600}}>
+              {sigStatus.status==="signed"?"Slutseddel underskrevet":sigStatus.status==="cancelled"?"Underskrift annulleret":sigStatus.status==="expired"?"Underskrift udløbet":"Afventer underskrift"}
             </div>
             <div style={{color:"#888",fontSize:11,marginTop:1}}>
               {sigStatus.buyer_email} · {new Date(sigStatus.created_at).toLocaleDateString("da-DK")}
             </div>
           </div>
+          {sigStatus.envelope_id&&(
+            <a href={`https://app.firma.dev/signing-requests/${sigStatus.envelope_id}`} target="_blank" rel="noopener noreferrer"
+              style={{color:"#7cabff",fontSize:12,textDecoration:"none",padding:"5px 10px",borderRadius:6,border:"1px solid #7cabff33",background:"#1a2a4a",whiteSpace:"nowrap"}}>
+              {sigStatus.status==="signed"?"📄 Åbn dokument":"📄 Se status"}
+            </a>
+          )}
         </div>
       )}
 

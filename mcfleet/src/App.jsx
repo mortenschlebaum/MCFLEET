@@ -117,6 +117,7 @@ const mcFromDb = r => ({
   fotos: Array.isArray(r.fotos) ? r.fotos : (r.foto ? [r.foto] : []),
   foersteReg: r.foerste_reg||"",
   naesteSyn: r.naeste_syn||"",
+  noter: r.noter||"",
   lokationsLog: r.lokations_log||[], kmLog: r.km_log||[],
 });
 const mcToDb = m => {
@@ -125,6 +126,7 @@ const mcToDb = m => {
     gps: m.gps||"", syn: m.syn||"", km: m.km||0, location: m.location||"",
     beskrivelse: m.beskrivelse||"", foto: m.foto||"",
     fotos: m.fotos||[],
+    noter: m.noter||"",
     lokations_log: m.lokationsLog||[], km_log: m.kmLog||[],
   };
   if(m.foersteReg !== undefined) obj.foerste_reg = m.foersteReg||"";
@@ -1091,10 +1093,10 @@ export default function App() {
         // ── FASE 1: Kritisk data — brugere + MC'er ──
         const fetchMcs = async (attempt=1) => {
           try {
-            return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn&order=id");
+            return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn,noter&order=id");
           } catch(e1) {
             try {
-              return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log,foerste_reg,naeste_syn&order=id");
+              return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log,foerste_reg,naeste_syn,noter&order=id");
             } catch(e2) {
               if(attempt < 3) {
                 await new Promise(r=>setTimeout(r, 2000*attempt));
@@ -1173,7 +1175,7 @@ export default function App() {
             }catch(e){ console.error("Seed fejl MC",mc.id,e); }
           }
           // Hent dem tilbage efter seed
-          const seeded = await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn&order=id");
+          const seeded = await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn,noter&order=id");
           setMcs(seeded.map(mcFromDb));
         }
         // Seed ydelser hvis DB er tom
@@ -1525,6 +1527,17 @@ export default function App() {
       notify("Kilometertal opdateret ✓");
     } catch(e){ notify("DB fejl: "+e.message,true); }
   };
+  const onUpdateNoter=async(mcId, tekst)=>{
+    const mc = mcs.find(m=>m.id===mcId);
+    if(!mc) return;
+    const opdateret = {...mc, noter:tekst};
+    setMcs(p=>p.map(m=>m.id===mcId?opdateret:m));
+    if(mcModal?.id===mcId) setMcModal(opdateret);
+    try{
+      await db(`mcs?id=eq.${mcId}`,{method:"PATCH",body:JSON.stringify({noter:tekst}),prefer:"return=minimal"});
+      notify("Note gemt ✓");
+    } catch(e){ notify("DB fejl: "+e.message,true); }
+  };
   const doMove=async(loc)=>{
     const mc=mcs.find(m=>String(m.id)===String(moveModal));
     if(!mc){notify(`Fejl: MC ikke fundet (id=${moveModal})`,true);setMoveModal(null);return;}
@@ -1872,7 +1885,7 @@ export default function App() {
                       setMcs(p=>p.map(m=>String(m.id)===String(mcId)?{...m,foto:r.foto||"",fotos:nyFotos}:m));
                     }
                   }).catch(()=>{});
-                }} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor} notify={notify}/>;
+                }} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor} notify={notify} onUpdateNoter={(tekst)=>onUpdateNoter(liveMc.id,tekst)}/>;
             })()}
 
             {/* ── REDIGER MC ── */}
@@ -2124,9 +2137,10 @@ export default function App() {
 
 // ── SUB COMPONENTS ────────────────────────────────────────────────────────────
 
-function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor,notify}) {
+function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onUpdateNoter,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor,notify}) {
   const [kmInlineEdit, setKmInlineEdit] = React.useState(false);
   const [kmInlineVal, setKmInlineVal] = React.useState("");
+  const [noteText, setNoteText] = React.useState(mc.noter||"");
   const [slutseddelModal, setSlutseddelModal] = React.useState(false);
   const [køberForm, setKøberForm] = React.useState({
     navn:"", adresse:"", postby:"", telefon:"", email:"", pris:"", km:"",
@@ -2543,6 +2557,29 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
             style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:6,padding:"7px 14px",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
             Gem
           </button>
+        </div>
+      </div>
+
+      {/* ── NOTER ── */}
+      <div style={{marginTop:16,background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
+        <div style={{padding:"13px 16px",borderBottom:"1px solid #2a2a2a",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontWeight:700,fontSize:15}}>📝 Noter vedrørende MC'en</span>
+        </div>
+        <div style={{padding:"12px 16px"}}>
+          <textarea
+            value={noteText}
+            onChange={e=>setNoteText(e.target.value)}
+            placeholder="Tilføj noter om denne motorcykel..."
+            rows={4}
+            style={{...inp,width:"100%",padding:"10px 12px",fontSize:13,borderRadius:6,resize:"vertical",minHeight:80,fontFamily:"inherit"}}/>
+          {noteText!==(mc.noter||"")&&(
+            <div style={{marginTop:8,display:"flex",justifyContent:"flex-end"}}>
+              <button onClick={()=>{onUpdateNoter&&onUpdateNoter(noteText);}}
+                style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:6,padding:"7px 18px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                Gem note
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

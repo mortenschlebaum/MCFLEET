@@ -27,27 +27,43 @@ exports.handler = async (event) => {
 
     const sr = await resp.json();
 
-    const docUrl = sr.certificate?.final_document_download_url
+    // #region agent log
+    if (event.queryStringParameters?.debug === "1") {
+      return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        status: sr.status, certificate: sr.certificate, has_document_url: !!sr.document_url,
+        timestamps: sr.timestamps, name: sr.name, expires_at: sr.expires_at
+      }, null, 2) };
+    }
+    // #endregion
+
+    const isFinished = sr.status?.finished === true;
+    const signedDocUrl = sr.certificate?.final_document_download_url
       || sr.certificate?.document_only_download_url
-      || sr.document_url
       || null;
 
-    if (docUrl) {
-      return { statusCode: 302, headers: { Location: docUrl }, body: "" };
+    if (isFinished && signedDocUrl) {
+      return { statusCode: 302, headers: { Location: signedDocUrl }, body: "" };
     }
+
+    const statusClass = isFinished ? "signed" : sr.status?.cancelled ? "cancelled" : sr.status?.expired ? "expired" : "pending";
+    const statusText = isFinished
+      ? (signedDocUrl ? "Underskrevet" : "Underskrevet — dokument genereres...")
+      : sr.status?.cancelled ? "Annulleret" : sr.status?.expired ? "Udløbet" : "Afventer underskrift";
 
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Signing status</title>
       <style>body{font-family:system-ui;background:#1a1a2e;color:#eee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
-      .card{background:#16213e;border-radius:12px;padding:32px 40px;max-width:420px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+      .card{background:#16213e;border-radius:12px;padding:32px 40px;max-width:480px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.4)}
       h2{margin:0 0 12px}p{color:#aaa;margin:4px 0;font-size:14px}.badge{display:inline-block;padding:6px 16px;border-radius:20px;font-weight:600;margin:12px 0}
       .pending{background:#2d1f00;color:#ffd166;border:1px solid #e6a81755}.signed{background:#0a2d1a;color:#6ee7b7;border:1px solid #22a06b55}
-      .cancelled{background:#2d0a0a;color:#f87171;border:1px solid #cc000055}.expired{background:#2d1a0a;color:#ffa366;border:1px solid #cc660055}</style></head>
+      .cancelled{background:#2d0a0a;color:#f87171;border:1px solid #cc000055}.expired{background:#2d1a0a;color:#ffa366;border:1px solid #cc660055}
+      .hint{color:#666;font-size:12px;margin-top:16px}</style></head>
       <body><div class="card"><h2>${sr.name || "Slutseddel"}</h2>
-      <div class="badge ${sr.status?.finished?"signed":sr.status?.cancelled?"cancelled":sr.status?.expired?"expired":"pending"}">
-      ${sr.status?.finished?"Underskrevet":sr.status?.cancelled?"Annulleret":sr.status?.expired?"Udløbet":"Afventer underskrift"}</div>
-      <p>Oprettet: ${sr.timestamps?.created_on?new Date(sr.timestamps.created_on).toLocaleDateString("da-DK"):"—"}</p>
-      ${sr.timestamps?.finished_on?`<p>Underskrevet: ${new Date(sr.timestamps.finished_on).toLocaleDateString("da-DK")}</p>`:""}
-      ${sr.expires_at?`<p>Udløber: ${new Date(sr.expires_at).toLocaleDateString("da-DK")}</p>`:""}
+      <div class="badge ${statusClass}">${statusText}</div>
+      <p>Oprettet: ${sr.timestamps?.created_on ? new Date(sr.timestamps.created_on).toLocaleDateString("da-DK") : "—"}</p>
+      ${sr.timestamps?.finished_on ? `<p>Underskrevet: ${new Date(sr.timestamps.finished_on).toLocaleDateString("da-DK")}</p>` : ""}
+      ${sr.expires_at && !isFinished ? `<p>Udløber: ${new Date(sr.expires_at).toLocaleDateString("da-DK")}</p>` : ""}
+      ${isFinished && !signedDocUrl ? `<p class="hint">Dokumentet er ved at blive genereret. Prøv igen om et øjeblik.</p>` : ""}
+      ${!isFinished ? `<p class="hint">Dokumentet kan først hentes når alle parter har underskrevet.</p>` : ""}
       </div></body></html>`;
 
     return { statusCode: 200, headers: { "Content-Type": "text/html; charset=utf-8" }, body: html };

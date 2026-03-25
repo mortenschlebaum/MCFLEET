@@ -2332,34 +2332,58 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
         </div>
 
         {/* Fakturaer */}
-        <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
-          <div style={{padding:"13px 16px",borderBottom:"1px solid #2a2a2a",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <span style={{fontWeight:700,fontSize:15}}>Fakturaer</span>
-            <span style={{color:"#888",fontSize:12}}>{fakturaer.length} stk · {fmt(fakturaer.reduce((s,f)=>s+f.total,0))} kr</span>
-          </div>
-          {fakturaer.length===0?(
-            <div style={{padding:32,textAlign:"center",color:"#555",fontSize:13}}>Ingen fakturaer endnu</div>
-          ):(
-            <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",minWidth:360}}>
-                <thead><tr style={{background:"#222"}}>
-                  {["Faktura nr","Dato","Total",""].map(h=>(
-                    <th key={h} style={{padding:"9px 14px",textAlign:"left",fontSize:11,letterSpacing:.8,color:"#777",fontWeight:700,textTransform:"uppercase"}}>{h}</th>
-                  ))}
-                </tr></thead>
-                <tbody>
-                  {fakturaer.map((f,i)=>(
-                    <tr key={f.id} className="tap" style={{background:i%2===0?"#1a1a1a":"#1e1e1e",borderBottom:"1px solid #222",cursor:"pointer"}} onClick={()=>onVisFaktura(f)}>
-                      <td style={{padding:"10px 14px",fontWeight:700,color:"#f87171",fontSize:13}}>{f.id}</td>
-                      <td style={{padding:"10px 14px",fontSize:13,color:"#ccc"}}>{fmtDato(f.dato)}{f.km?<span style={{fontSize:11,color:"#888",marginLeft:6}}>({f.km.toLocaleString("da-DK")} km)</span>:null}</td>
-                      <td style={{padding:"10px 14px",fontWeight:700,color:"#4ade80",fontSize:13}}>{fmt(f.total)} kr</td>
-                      <td style={{padding:"10px 14px"}}><span style={{color:"#888",fontSize:12}}>›</span></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <div style={{display:"flex",flexDirection:"column",gap:16}}>
+          <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
+            <div style={{padding:"13px 16px",borderBottom:"1px solid #2a2a2a",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontWeight:700,fontSize:15}}>Fakturaer</span>
+              <span style={{color:"#888",fontSize:12}}>{fakturaer.length} stk · {fmt(fakturaer.reduce((s,f)=>s+f.total,0))} kr</span>
             </div>
-          )}
+            {fakturaer.length===0?(
+              <div style={{padding:32,textAlign:"center",color:"#555",fontSize:13}}>Ingen fakturaer endnu</div>
+            ):(
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",minWidth:360}}>
+                  <thead><tr style={{background:"#222"}}>
+                    {["Faktura nr","Dato","Total",""].map(h=>(
+                      <th key={h} style={{padding:"9px 14px",textAlign:"left",fontSize:11,letterSpacing:.8,color:"#777",fontWeight:700,textTransform:"uppercase"}}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {fakturaer.map((f,i)=>(
+                      <tr key={f.id} className="tap" style={{background:i%2===0?"#1a1a1a":"#1e1e1e",borderBottom:"1px solid #222",cursor:"pointer"}} onClick={()=>onVisFaktura(f)}>
+                        <td style={{padding:"10px 14px",fontWeight:700,color:"#f87171",fontSize:13}}>{f.id}</td>
+                        <td style={{padding:"10px 14px",fontSize:13,color:"#ccc"}}>{fmtDato(f.dato)}{f.km?<span style={{fontSize:11,color:"#888",marginLeft:6}}>({f.km.toLocaleString("da-DK")} km)</span>:null}</td>
+                        <td style={{padding:"10px 14px",fontWeight:700,color:"#4ade80",fontSize:13}}>{fmt(f.total)} kr</td>
+                        <td style={{padding:"10px 14px"}}><span style={{color:"#888",fontSize:12}}>›</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          {/* ── NOTER ── */}
+          <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
+            <div style={{padding:"13px 16px",borderBottom:"1px solid #2a2a2a"}}>
+              <span style={{fontWeight:700,fontSize:15}}>📝 Noter vedrørende MC'en</span>
+            </div>
+            <div style={{padding:"12px 16px"}}>
+              <textarea
+                value={noteText}
+                onChange={e=>setNoteText(e.target.value)}
+                placeholder="Tilføj noter om denne motorcykel..."
+                rows={3}
+                style={{...inp,width:"100%",padding:"10px 12px",fontSize:13,borderRadius:6,resize:"vertical",minHeight:60,fontFamily:"inherit"}}/>
+              {noteText!==(mc.noter||"")&&(
+                <div style={{marginTop:8,display:"flex",justifyContent:"flex-end"}}>
+                  <button onClick={()=>{onUpdateNoter&&onUpdateNoter(noteText);}}
+                    style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:6,padding:"7px 18px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                    Gem note
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -2557,29 +2581,6 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
             style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:6,padding:"7px 14px",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
             Gem
           </button>
-        </div>
-      </div>
-
-      {/* ── NOTER ── */}
-      <div style={{marginTop:16,background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
-        <div style={{padding:"13px 16px",borderBottom:"1px solid #2a2a2a",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <span style={{fontWeight:700,fontSize:15}}>📝 Noter vedrørende MC'en</span>
-        </div>
-        <div style={{padding:"12px 16px"}}>
-          <textarea
-            value={noteText}
-            onChange={e=>setNoteText(e.target.value)}
-            placeholder="Tilføj noter om denne motorcykel..."
-            rows={4}
-            style={{...inp,width:"100%",padding:"10px 12px",fontSize:13,borderRadius:6,resize:"vertical",minHeight:80,fontFamily:"inherit"}}/>
-          {noteText!==(mc.noter||"")&&(
-            <div style={{marginTop:8,display:"flex",justifyContent:"flex-end"}}>
-              <button onClick={()=>{onUpdateNoter&&onUpdateNoter(noteText);}}
-                style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:6,padding:"7px 18px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
-                Gem note
-              </button>
-            </div>
-          )}
         </div>
       </div>
 

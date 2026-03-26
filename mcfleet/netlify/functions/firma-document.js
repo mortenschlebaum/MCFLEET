@@ -27,6 +27,15 @@ exports.handler = async (event) => {
 
     const sr = await resp.json();
 
+    // #region agent log
+    if (event.queryStringParameters?.debug === "1") {
+      return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        status: sr.status, certificate: sr.certificate, timestamps: sr.timestamps,
+        name: sr.name, expires_at: sr.expires_at, has_document_url: !!sr.document_url
+      }, null, 2) };
+    }
+    // #endregion
+
     const isFinished = sr.status?.finished === true;
     const signedDocUrl = sr.certificate?.final_document_download_url
       || sr.certificate?.document_only_download_url

@@ -53,11 +53,13 @@ exports.handler = async (event) => {
       const sUrl = process.env.SUPABASE_URL;
       const sKey = process.env.SUPABASE_SERVICE_KEY;
       if (sUrl && sKey) {
-        fetch(`${sUrl}/rest/v1/signatures?envelope_id=eq.${id}&status=eq.pending`, {
-          method: "PATCH",
-          headers: { apikey: sKey, Authorization: `Bearer ${sKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify({ status: "signed", signed_at: sr.timestamps?.finished_on || new Date().toISOString() }),
-        }).catch(() => {});
+        try {
+          await fetch(`${sUrl}/rest/v1/signatures?envelope_id=eq.${id}&status=eq.pending`, {
+            method: "PATCH",
+            headers: { apikey: sKey, Authorization: `Bearer ${sKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+            body: JSON.stringify({ status: "signed", signed_at: sr.timestamps?.finished_on || new Date().toISOString() }),
+          });
+        } catch (_) {}
       }
     }
 

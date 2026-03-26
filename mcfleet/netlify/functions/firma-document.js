@@ -30,8 +30,11 @@ exports.handler = async (event) => {
     // #region agent log
     if (event.queryStringParameters?.debug === "1") {
       return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-        status: sr.status, certificate: sr.certificate, timestamps: sr.timestamps,
-        name: sr.name, expires_at: sr.expires_at, has_document_url: !!sr.document_url
+        all_top_keys: Object.keys(sr),
+        certificate_full: sr.certificate,
+        certificate_keys: sr.certificate ? Object.keys(sr.certificate) : null,
+        status: sr.status,
+        document_url_preview: sr.document_url ? sr.document_url.substring(0, 100) + "..." : null,
       }, null, 2) };
     }
     // #endregion

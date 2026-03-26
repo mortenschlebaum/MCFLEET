@@ -30,11 +30,16 @@ exports.handler = async (event) => {
     // #region agent log
     if (event.queryStringParameters?.debug === "1") {
       return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-        all_top_keys: Object.keys(sr),
-        certificate_full: sr.certificate,
-        certificate_keys: sr.certificate ? Object.keys(sr.certificate) : null,
         status: sr.status,
-        document_url_preview: sr.document_url ? sr.document_url.substring(0, 100) + "..." : null,
+        certificate: sr.certificate,
+        final_document_download_url: sr.final_document_download_url,
+        final_document_download_error: sr.final_document_download_error,
+        document_only_download_url: sr.document_only_download_url,
+        document_only_download_error: sr.document_only_download_error,
+        certificate_only_download_url: sr.certificate_only_download_url,
+        certificate_only_download_error: sr.certificate_only_download_error,
+        isFinished: sr.status?.finished === true,
+        signedDocUrl: sr.final_document_download_url || sr.document_only_download_url || null,
       }, null, 2) };
     }
     // #endregion

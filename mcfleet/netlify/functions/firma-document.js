@@ -27,23 +27,6 @@ exports.handler = async (event) => {
 
     const sr = await resp.json();
 
-    // #region agent log
-    if (event.queryStringParameters?.debug === "1") {
-      return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-        status: sr.status,
-        certificate: sr.certificate,
-        final_document_download_url: sr.final_document_download_url,
-        final_document_download_error: sr.final_document_download_error,
-        document_only_download_url: sr.document_only_download_url,
-        document_only_download_error: sr.document_only_download_error,
-        certificate_only_download_url: sr.certificate_only_download_url,
-        certificate_only_download_error: sr.certificate_only_download_error,
-        isFinished: sr.status?.finished === true,
-        signedDocUrl: sr.final_document_download_url || sr.document_only_download_url || null,
-      }, null, 2) };
-    }
-    // #endregion
-
     const isFinished = sr.status?.finished === true;
     const signedDocUrl = sr.final_document_download_url
       || sr.document_only_download_url

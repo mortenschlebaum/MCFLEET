@@ -40,9 +40,21 @@ exports.handler = async (event) => {
     // #endregion
 
     const isFinished = sr.status?.finished === true;
-    const signedDocUrl = sr.certificate?.final_document_download_url
-      || sr.certificate?.document_only_download_url
+    const signedDocUrl = sr.final_document_download_url
+      || sr.document_only_download_url
       || null;
+
+    if (isFinished && id) {
+      const sUrl = process.env.SUPABASE_URL;
+      const sKey = process.env.SUPABASE_SERVICE_KEY;
+      if (sUrl && sKey) {
+        fetch(`${sUrl}/rest/v1/signatures?envelope_id=eq.${id}&status=eq.pending`, {
+          method: "PATCH",
+          headers: { apikey: sKey, Authorization: `Bearer ${sKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ status: "signed", signed_at: sr.timestamps?.finished_on || new Date().toISOString() }),
+        }).catch(() => {});
+      }
+    }
 
     if (isFinished && signedDocUrl) {
       return { statusCode: 302, headers: { Location: signedDocUrl }, body: "" };

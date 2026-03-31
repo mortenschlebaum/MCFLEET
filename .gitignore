@@ -14,3 +14,6 @@ _compare_v100b/
 
 # Cursor IDE-filer (lokale debug-logs, workspace-data osv.)
 .cursor/
+
+# Eget repo: github.com/mortenschlebaum/modulplan (ligger typisk ved siden af MCFLEET lokalt)
+modulplan/

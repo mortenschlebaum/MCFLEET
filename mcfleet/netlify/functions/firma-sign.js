@@ -117,7 +117,7 @@ exports.handler = async (event) => {
     const envelopeId = result.id || result.signing_request_id || "";
 
     await supaInsert({
-      mc_id: mcId || 0,
+      mc_id: mcId || null,
       mc_reg: mcReg || "",
       envelope_id: envelopeId,
       buyer_email: buyerEmail,

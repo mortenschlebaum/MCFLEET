@@ -1424,6 +1424,9 @@ export default function App() {
 
     // Sæt initial history entry med nuværende hash (eller oversigt)
     const initHash = window.location.hash || "#oversigt";
+    // #region agent log
+    fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f05d67'},body:JSON.stringify({sessionId:'f05d67',location:'App.jsx:replaceState',message:'initial replaceState',data:{initHash,hardcodedNav:'oversigt'},hypothesisId:'A',timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     window.history.replaceState(
       { nav: "oversigt", mcModal: null, editMc: null, nyFak: null, fakDetail: null },
       "", initHash
@@ -1436,6 +1439,9 @@ export default function App() {
 
     const onPop = (e) => {
       const s = e.state;
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f05d67'},body:JSON.stringify({sessionId:'f05d67',location:'App.jsx:onPop',message:'popstate fired',data:{hasState:!!s,stateNav:s?.nav,stateFakDetail:!!s?.fakDetail,hash:window.location.hash},hypothesisId:'C',timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       if (s) {
         // Gendan fra pushState state-objekt
         setNav(s.nav || "oversigt");
@@ -1928,7 +1934,11 @@ export default function App() {
 
             {/* ── ALLE FAKTURAER ── */}
             {nav==="fakturaer"&&!fakDetail&&(
-              <AlleFakturaer fakturaer={fakturaer} onVis={(f)=>{setFakDetail(f);pushNav({nav:"fakturaer",mcModal:null,editMc:null,nyFak:null,fakDetail:f});}} onSætFaktureret={sætFaktureret} fmt={fmt} inp={inp} btnGhost={btnGhost} filterFak={fakFilterFak} setFilterFak={setFakFilterFak} filterAfd={fakFilterAfd} setFilterAfd={setFakFilterAfd}/>
+              <AlleFakturaer fakturaer={fakturaer} onVis={(f)=>{
+                // #region agent log
+                fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f05d67'},body:JSON.stringify({sessionId:'f05d67',location:'App.jsx:onVis',message:'faktura opened from list',data:{fakId:f.id,currentNav:nav,historyLength:window.history.length},hypothesisId:'B',timestamp:Date.now()})}).catch(()=>{});
+                // #endregion
+                setFakDetail(f);pushNav({nav:"fakturaer",mcModal:null,editMc:null,nyFak:null,fakDetail:f});}} onSætFaktureret={sætFaktureret} fmt={fmt} inp={inp} btnGhost={btnGhost} filterFak={fakFilterFak} setFilterFak={setFakFilterFak} filterAfd={fakFilterAfd} setFilterAfd={setFakFilterAfd}/>
             )}
 
             {/* ── ADMINISTRATION ── */}

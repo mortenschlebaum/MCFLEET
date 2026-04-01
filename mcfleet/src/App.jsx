@@ -1055,6 +1055,8 @@ export default function App() {
   const [editMc,setEditMc]=useState(null);
   const [nyFak,setNyFak]=useState(null);
   const [fakDetail,setFakDetail]=useState(null);
+  const [fakFilterFak,setFakFilterFak]=useState("alle");
+  const [fakFilterAfd,setFakFilterAfd]=useState("Alle");
   const [moveModal,setMoveModal]=useState(null);
   const [nyYdelse,setNyYdelse]=useState({nr:"",navn:"",pris:""});
   const [editYdelse,setEditYdelse]=useState(null);
@@ -1320,6 +1322,7 @@ export default function App() {
   const buildHash = (state) => {
     const { nav, mcModal, editMc, nyFak, fakDetail } = state;
     if (fakDetail && mcModal) return `#mc-${mcModal.id}-faktura-${fakDetail.id}`;
+    if (fakDetail && nav === "fakturaer") return `#fakturaer`;
     if (nyFak && mcModal)     return `#mc-${mcModal.id}-faktura`;
     if (editMc && mcModal)    return `#mc-${mcModal.id}-rediger`;
     if (mcModal)              return `#mc-${mcModal.id}`;
@@ -1920,12 +1923,12 @@ export default function App() {
 
             {/* ── FAKTURA DETALJE ── */}
             {fakDetail&&(
-              <FakturaDetalje faktura={fakDetail} onBack={()=>{setFakDetail(null);window.history.back();}} onRediger={startRedigerFak} onSætFaktureret={sætFaktureret} fmt={fmt} btnGhost={btnGhost} btnRed={btnRed} lokationer={lokationer} notify={notify} isAdmin={isAdmin}/>
+              <FakturaDetalje faktura={fakDetail} onBack={()=>window.history.back()} onRediger={startRedigerFak} onSætFaktureret={sætFaktureret} fmt={fmt} btnGhost={btnGhost} btnRed={btnRed} lokationer={lokationer} notify={notify} isAdmin={isAdmin}/>
             )}
 
             {/* ── ALLE FAKTURAER ── */}
             {nav==="fakturaer"&&!fakDetail&&(
-              <AlleFakturaer fakturaer={fakturaer} onVis={setFakDetail} onSætFaktureret={sætFaktureret} fmt={fmt} inp={inp} btnGhost={btnGhost}/>
+              <AlleFakturaer fakturaer={fakturaer} onVis={(f)=>{setFakDetail(f);pushNav({nav:"fakturaer",mcModal:null,editMc:null,nyFak:null,fakDetail:f});}} onSætFaktureret={sætFaktureret} fmt={fmt} inp={inp} btnGhost={btnGhost} filterFak={fakFilterFak} setFilterFak={setFakFilterFak} filterAfd={fakFilterAfd} setFilterAfd={setFakFilterAfd}/>
             )}
 
             {/* ── ADMINISTRATION ── */}
@@ -4013,10 +4016,8 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
 }
 
 
-function AlleFakturaer({fakturaer,onVis,onSætFaktureret,fmt,inp,btnGhost}) {
+function AlleFakturaer({fakturaer,onVis,onSætFaktureret,fmt,inp,btnGhost,filterFak,setFilterFak,filterAfd,setFilterAfd}) {
   const [search,setSearch]=useState("");
-  const [filterAfd,setFilterAfd]=useState("Alle");
-  const [filterFak,setFilterFak]=useState("alle"); // alle/faktureret/ikkeFaktureret
   const afdelinger=["Alle",...new Set(fakturaer.map(f=>f.afdeling).filter(Boolean))];
   const fil=fakturaer.filter(f=>{
     if(search&&!f.id.toLowerCase().includes(search.toLowerCase())&&!f.mcReg.toLowerCase().includes(search.toLowerCase())&&!(f.afdeling||"").toLowerCase().includes(search.toLowerCase())) return false;

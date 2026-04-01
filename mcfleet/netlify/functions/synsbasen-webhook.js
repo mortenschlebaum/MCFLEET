@@ -68,6 +68,10 @@ exports.handler = async (event) => {
   const { event: eventType, data } = payload;
   console.log("Synsbasen webhook:", eventType);
 
+  // #region agent log
+  fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f05d67'},body:JSON.stringify({sessionId:'f05d67',location:'synsbasen-webhook.js:68',message:'WEBHOOK_RECEIVED',data:{eventType,hasData:data!==null&&data!==undefined,dataKeys:data?Object.keys(data):[],rawDataSample:JSON.stringify(data)?.slice(0,300)},timestamp:Date.now(),hypothesisId:'H-A,H-D'})}).catch(()=>{});
+  // #endregion
+
   try {
     if (eventType === "inspection.created" && data) {
       // data is an inspection object — extract vehicle reg/vin and inspection date
@@ -75,7 +79,16 @@ exports.handler = async (event) => {
       const vin = data.vehicle?.vin || data.vin;
       const inspDate = normDate(data.inspection_date || data.date || "");
 
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f05d67'},body:JSON.stringify({sessionId:'f05d67',location:'synsbasen-webhook.js:78',message:'INSPECTION_CREATED_PARSED',data:{reg,vin,inspDate},timestamp:Date.now(),hypothesisId:'H-B'})}).catch(()=>{});
+      // #endregion
+
       const mcs = await findMcs(reg, vin);
+
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f05d67'},body:JSON.stringify({sessionId:'f05d67',location:'synsbasen-webhook.js:80',message:'FINDMCS_RESULT',data:{reg,vin,found:mcs.length,mcs:mcs.map(m=>({id:m.id,reg:m.reg}))},timestamp:Date.now(),hypothesisId:'H-B'})}).catch(()=>{});
+      // #endregion
+
       for (const mc of mcs) {
         const update = {};
         if (inspDate) update.syn = inspDate;
@@ -87,6 +100,10 @@ exports.handler = async (event) => {
     else if (eventType === "vehicle.updated" && data) {
       const reg = data.registration;
       const vin = data.vin;
+
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f05d67'},body:JSON.stringify({sessionId:'f05d67',location:'synsbasen-webhook.js:90',message:'VEHICLE_UPDATED_PARSED',data:{reg,vin,last_inspection_date:data.last_inspection_date,next_inspection_date_estimate:data.next_inspection_date_estimate},timestamp:Date.now(),hypothesisId:'H-B'})}).catch(()=>{});
+      // #endregion
 
       const mcs = await findMcs(reg, vin);
       for (const mc of mcs) {
@@ -115,9 +132,18 @@ exports.handler = async (event) => {
       }
     }
 
+    else {
+      // #region agent log
+      fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f05d67'},body:JSON.stringify({sessionId:'f05d67',location:'synsbasen-webhook.js:118',message:'EVENT_NOT_HANDLED',data:{eventType,dataIsNull:data===null,reason:!data?'data_is_null':'unknown_event_type'},timestamp:Date.now(),hypothesisId:'H-A,H-D'})}).catch(()=>{});
+      // #endregion
+    }
+
     // inspections.updated and vehicles.updated are batch events with no vehicle-specific data — just acknowledge
   } catch (err) {
     console.error("Webhook handler error:", err.message);
+    // #region agent log
+    fetch('http://127.0.0.1:7596/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f05d67'},body:JSON.stringify({sessionId:'f05d67',location:'synsbasen-webhook.js:122',message:'HANDLER_ERROR',data:{error:err.message},timestamp:Date.now(),hypothesisId:'H-C'})}).catch(()=>{});
+    // #endregion
     // Return 200 anyway to prevent Synsbasen from retrying indefinitely
     return { statusCode: 200, body: JSON.stringify({ received: true, error: err.message }) };
   }

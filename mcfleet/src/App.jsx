@@ -1498,14 +1498,6 @@ export default function App() {
       setMcs(p=>[...p,endelig]);
       try{ await db("mcs",{method:"POST",body:JSON.stringify(mcToDb(endelig)),prefer:"return=minimal"}); }
       catch(e){ notify("DB fejl: "+e.message,true); }
-      // Registrer ny MC til Synsbasen overvågning (fire-and-forget)
-      if(endelig.reg) {
-        fetch("/.netlify/functions/synsbasen-watch-single", {
-          method:"POST",
-          headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({reg:endelig.reg}),
-        }).catch(()=>{});
-      }
     }
     notify(_erNy?"MC oprettet ✓":"MC opdateret ✓");
     setEditMc(null);

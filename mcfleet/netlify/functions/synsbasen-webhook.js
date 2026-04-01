@@ -5,6 +5,7 @@ const crypto = require("crypto");
 
 const SUPA_URL = process.env.SUPABASE_URL;
 const SUPA_KEY = process.env.SUPABASE_SERVICE_KEY;
+const SYNS_KEY = process.env.SYNSBASEN_API_KEY;
 
 async function supa(path, opts = {}) {
   const res = await fetch(`${SUPA_URL}/rest/v1/${path}`, {
@@ -115,7 +116,16 @@ exports.handler = async (event) => {
       }
     }
 
-    // inspections.updated og vehicles.updated er batch-events uden køretøjsspecifik data — kun acknowledge
+    else if (eventType === "vehicles.updated") {
+      // Ugentligt batch-event (mandag) — trigger background polling af MC'er med syn inden for 90 dage
+      const baseUrl = process.env.URL || "https://mc.lisbeth.dk";
+      fetch(`${baseUrl}/.netlify/functions/synsbasen-poll-background`, { method: "POST" }).catch((e) =>
+        console.error("Kunne ikke starte poll-background:", e.message)
+      );
+      console.log("vehicles.updated: startet synsbasen-poll-background");
+    }
+
+    // inspections.updated er et batch-event uden køretøjsspecifik data — kun acknowledge
   } catch (err) {
     console.error("Webhook handler error:", err.message);
     // Return 200 anyway to prevent Synsbasen from retrying indefinitely

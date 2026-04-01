@@ -1,5 +1,6 @@
 // Synkroniser alle aktive MC'er fra Supabase til Synsbasens watched_vehicles.
-// Kald manuelt via: GET/POST https://mc.lisbeth.dk/.netlify/functions/synsbasen-sync-watched
+// Background function — returnerer 202 straks og kører op til 15 minutter.
+// Kald via: POST https://mc.lisbeth.dk/.netlify/functions/synsbasen-sync-watched-background
 // Idempotent — kører trygt flere gange.
 
 const SUPA_URL = process.env.SUPABASE_URL;
@@ -30,15 +31,13 @@ async function synsbasen(method, path, body) {
   return { status: res.status, body: await res.json().catch(() => null) };
 }
 
-exports.handler = async (event) => {
+exports.handler = async () => {
   if (!SUPA_KEY || !SYNS_KEY) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: "Mangler SUPABASE_SERVICE_KEY eller SYNSBASEN_API_KEY i env" }),
-    };
+    console.error("Mangler SUPABASE_SERVICE_KEY eller SYNSBASEN_API_KEY");
+    return;
   }
 
-  // Hent alle MC'er med reg og stel — paginer for at få alle
+  // Hent alle MC'er — paginer for at få alle
   let allMcs = [];
   let page = 0;
   const pageSize = 1000;
@@ -53,7 +52,7 @@ exports.handler = async (event) => {
 
   console.log(`Fandt ${allMcs.length} MC'er i Supabase`);
 
-  // Hent allerede overvågede køretøjer fra Synsbasen
+  // Hent allerede overvågede køretøjer fra Synsbasen (op til 100)
   const existingRes = await synsbasen("GET", "/watched_vehicles?per_page=100");
   const alreadyWatched = new Set(
     (existingRes.body?.data || []).map((w) => String(w.vehicle_id))
@@ -91,7 +90,6 @@ exports.handler = async (event) => {
       results.tilmeldt.push(reg);
       alreadyWatched.add(String(vehicleId));
     } else if (watch.status === 422) {
-      // Allerede overvåget (race condition eller paginering)
       console.log(`Allerede overvåget (422): ${reg}`);
       results.allerede.push(reg);
     } else {
@@ -103,17 +101,12 @@ exports.handler = async (event) => {
     await new Promise((r) => setTimeout(r, 150));
   }
 
-  console.log("Sync færdig:", results);
-
-  return {
-    statusCode: 200,
-    body: JSON.stringify({
-      total: allMcs.length,
-      tilmeldt: results.tilmeldt.length,
-      allerede: results.allerede.length,
-      ikkeFundet: results.ikkeFundet.length,
-      fejl: results.fejl.length,
-      detaljer: results,
-    }, null, 2),
-  };
+  console.log("Sync færdig:", JSON.stringify({
+    total: allMcs.length,
+    tilmeldt: results.tilmeldt.length,
+    allerede: results.allerede.length,
+    ikkeFundet: results.ikkeFundet.length,
+    fejl: results.fejl.length,
+    detaljer: results,
+  }));
 };

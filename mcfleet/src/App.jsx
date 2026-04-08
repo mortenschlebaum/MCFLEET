@@ -1784,8 +1784,9 @@ export default function App() {
     {id:"opgaver",icon:"📋",label:"Opgaver"},
     {id:"planlægning",icon:"📅",label:"Planlægning"},
     {id:"fakturaer",icon:"🧾",label:"Fakturaer"},
+    ...(isAdmin?[{id:"slutsedler",icon:"📄",label:"Slutsedler"}]:[]),
     {id:"administration",icon:"⚙️",label:"Administration"},
-    ...(isAdmin?[{id:"brugere",icon:"👥",label:"Brugere"},{id:"slutsedler",icon:"📄",label:"Slutsedler"}]:[]),
+    ...(isAdmin?[{id:"brugere",icon:"👥",label:"Brugere"}]:[]),
   ];
 
   const showingSubpage = mcModal||editMc||nyFak||fakDetail;

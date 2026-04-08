@@ -678,6 +678,19 @@ const genSlutseddel = (mc, køber) => {
     doc.text(synNotes,col2,y);
     y+=synNotes.length*2.8+4;
 
+    // #region agent log
+    fetch('http://127.0.0.1:7249/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9ea238'},body:JSON.stringify({sessionId:'9ea238',hypothesisId:'C-D',location:'App.jsx:pdf-omreg-forsikring',message:'PDF omreg forsikring section reached',data:{y,pageCount:doc.getNumberOfPages(),omregForsikring:køber.køberOmregForsikring,omregSelskab:køber.køberOmregSelskab,køberKeys:Object.keys(køber)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    // Ved omregistrering tegnes der Kasko/Ansvar i Selskab
+    txt("Ved omregistrering tegnes der",M,y,7.5,false,[50,50,50]);
+    y+=5;
+    box(M,y,køber.køberOmregForsikring==="kasko"); txt("Kasko",M+5,y,8);
+    box(M+22,y,køber.køberOmregForsikring==="ansvar"); txt("Ansvar",M+27,y,8);
+    txt("i Selskab:",M+47,y,7.5,false,[80,80,80]);
+    if(køber.køberOmregSelskab) txt(String(køber.køberOmregSelskab),M+68,y,8,false,[20,20,20]);
+    uLine(M+68,y+1,40);
+    y+=8;
+
     ln(M,y,W-M,y); y+=4;
 
     // ── FORSIKRING ──
@@ -897,6 +910,7 @@ function LoginScreen({onLogin, fejl}) {
   const [brugernavn,setBrugernavn]=useState("");
   const [adgangskode,setAdgangskode]=useState("");
   const [vis,setVis]=useState(false);
+  const [loginLogoOk,setLoginLogoOk]=useState(true);
   return (
     <div style={{minHeight:"100dvh",background:"#111",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
       <div style={{width:"100%",maxWidth:380}}>
@@ -905,7 +919,12 @@ function LoginScreen({onLogin, fejl}) {
           <div style={{fontSize:48,marginBottom:8}}>🏍</div>
           <div style={{fontSize:22,fontWeight:800,color:"#fff",letterSpacing:1}}>MCFLEET</div>
           <div style={{width:40,height:3,background:"#cc0000",borderRadius:2,margin:"10px auto 4px"}}/>
-          <div style={{fontSize:13,color:"#888"}}>Lisbeth's Køreskole</div>
+          {loginLogoOk ? (
+            <img src="/lisbeth-koreskole-logo.png" alt="Lisbeth's Køreskole" onError={()=>setLoginLogoOk(false)}
+              style={{display:"block",margin:"0 auto",maxWidth:240,maxHeight:52,objectFit:"contain"}}/>
+          ) : (
+            <div style={{fontSize:13,color:"#888"}}>Lisbeth's Køreskole</div>
+          )}
         </div>
         {/* Formular */}
         <div style={{background:"#1a1a1a",borderRadius:14,border:"1px solid #2a2a2a",padding:"28px 24px"}}>
@@ -1047,6 +1066,7 @@ export default function App() {
   const [fakturaer,setFakturaer]=useState([]);
   const [nav,setNav]=useState("oversigt");
   const [sidebarOpen,setSidebarOpen]=useState(false);
+  const [brandLogoOk,setBrandLogoOk]=useState(true);
   const [note,setNote]=useState(null);
   const [search,setSearch]=useState("");
   const [filterLoc,setFilterLoc]=useState("Alle");
@@ -1729,7 +1749,12 @@ export default function App() {
       {/* ── SIDEBAR ── */}
       <div className="sidebar" style={{position:"fixed",top:0,left:0,height:"100%",width:220,background:"#161616",borderRight:"1px solid #2a2a2a",display:"flex",flexDirection:"column",zIndex:200,transform:sidebarOpen?"translateX(0)":"translateX(-100%)",transition:"transform 0.25s ease"}}>
         <div style={{padding:"20px 18px 14px",borderBottom:"1px solid #2a2a2a"}}>
-          <div style={{fontSize:15,fontWeight:700}}>Lisbeth's Køreskole</div>
+          {brandLogoOk ? (
+            <img src="/lisbeth-koreskole-logo.png" alt="Lisbeth's Køreskole" onError={()=>setBrandLogoOk(false)}
+              style={{display:"block",width:"100%",height:"auto",maxHeight:56,objectFit:"contain",objectPosition:"left center"}}/>
+          ) : (
+            <div style={{fontSize:15,fontWeight:700}}>Lisbeth's Køreskole</div>
+          )}
           <div style={{width:36,height:3,background:"#cc0000",marginTop:8,borderRadius:2}}/>
         </div>
         <nav style={{flex:1,padding:"10px 8px",display:"flex",flexDirection:"column",gap:2}}>
@@ -1759,7 +1784,12 @@ export default function App() {
         {/* Top bar (mobile) */}
         <div className="mobile-only" style={{background:"#161616",borderBottom:"1px solid #2a2a2a",padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
           <button onClick={()=>setSidebarOpen(true)} style={{background:"none",border:"none",color:"#fff",fontSize:22,cursor:"pointer",padding:"2px 6px",lineHeight:1}}>☰</button>
-          <span style={{fontWeight:700,fontSize:15,flex:1}}>Lisbeth's Køreskole</span>
+          {brandLogoOk ? (
+            <img src="/lisbeth-koreskole-logo.png" alt="" onError={()=>setBrandLogoOk(false)}
+              style={{height:30,maxWidth:170,width:"auto",objectFit:"contain",objectPosition:"left center",flex:1}}/>
+          ) : (
+            <span style={{fontWeight:700,fontSize:15,flex:1}}>Lisbeth's Køreskole</span>
+          )}
           <span style={{fontSize:12,color:bruger.rolle==="admin"?"#f87171":"#60a5fa",fontWeight:600}}>{bruger.navn}</span>
           <button onClick={logout} title="Log ud" style={{background:"none",border:"none",color:"#888",cursor:"pointer",fontSize:18,padding:"2px",lineHeight:1}}>⏻</button>
         </div>
@@ -2174,6 +2204,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
     proevekørt:"ja",
     forsForsikrAnsvar:false, forsForsikrKasko:true,
     forsPolicenr:"", forsTegnetI:"Lokal forsikring",
+    køberOmregForsikring:"kasko", køberOmregSelskab:"",
   });
 
   // Lazy load foto — hentes kun når MC-detalje åbnes
@@ -2669,6 +2700,9 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
 
           {/* Sælger oplyser */}
           {(()=>{
+            // #region agent log
+            fetch('http://127.0.0.1:7249/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9ea238'},body:JSON.stringify({sessionId:'9ea238',hypothesisId:'A-B-D',location:'App.jsx:modal-iife',message:'Modal IIFE rendered - køberForm keys',data:{keys:Object.keys(køberForm),hasOmregForsikring:'køberOmregForsikring' in køberForm,hasOmregSelskab:'køberOmregSelskab' in køberForm,omregForsikring:køberForm.køberOmregForsikring},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
             const jnv = (key) => (
               <div style={{display:"flex",gap:4,marginTop:4}}>
                 {[["ja","Ja"],["nej","Nej"],["vednot","Ved ikke"]].map(([v,l])=>(
@@ -2755,6 +2789,24 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                     </div>
                   ))}
                 </div>
+
+                {sektionHdr("Omregistrering – købers forsikring")}
+                <div style={{marginBottom:8}}>
+                  <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,textTransform:"uppercase",letterSpacing:.5}}>Angiv købers forsikringsselskab</label>
+                  <input value={køberForm.køberOmregSelskab} placeholder="f.eks. Tryg Forsikring"
+                    onChange={e=>setKøberForm(p=>({...p,køberOmregSelskab:e.target.value}))}
+                    style={{...inp,width:"100%",boxSizing:"border-box"}}/>
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:8}}>
+                  {[["kasko","Kasko"],["ansvar","Ansvar"]].map(([val,label])=>(
+                    <button key={val} onClick={()=>setKøberForm(p=>({...p,køberOmregForsikring:val}))}
+                      style={{flex:1,padding:"5px 0",fontSize:11,fontWeight:600,borderRadius:5,border:"1px solid #444",cursor:"pointer",
+                        background:køberForm.køberOmregForsikring===val?"#cc0000":"#2a2a2a",
+                        color:køberForm.køberOmregForsikring===val?"#fff":"#aaa"}}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </>
             );
           })()}
@@ -2769,6 +2821,9 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                 alert("Email er påkrævet for digital underskrift");
                 return;
               }
+              // #region agent log
+              fetch('http://127.0.0.1:7249/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9ea238'},body:JSON.stringify({sessionId:'9ea238',hypothesisId:'D',location:'App.jsx:genSlutseddel-call',message:'genSlutseddel called with køberForm',data:{omregForsikring:køberForm.køberOmregForsikring,omregSelskab:køberForm.køberOmregSelskab,allKeys:Object.keys(køberForm)},timestamp:Date.now()})}).catch(()=>{});
+              // #endregion
               const result = await genSlutseddel(mc, køberForm);
               if(!result) return;
               setSlutseddelModal(false);

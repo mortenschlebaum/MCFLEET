@@ -506,6 +506,10 @@ const genSlutseddel = (mc, køber) => {
     });
     y += 69;
 
+    // CPR nr. kun på køber-siden
+    felt("CPR nr.", køber.cpr||"", col2, y, halfW);
+    y += 13;
+
     ln(M,y,W-M,y);
     y += 4;
 
@@ -2195,7 +2199,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
   const [noteText, setNoteText] = React.useState(mc.noter||"");
   const [slutseddelModal, setSlutseddelModal] = React.useState(false);
   const [køberForm, setKøberForm] = React.useState({
-    navn:"", adresse:"", postby:"", telefon:"", email:"", pris:"", km:"",
+    navn:"", adresse:"", postby:"", telefon:"", email:"", cpr:"", pris:"", km:"",
     s1:"nej", s2:"nej", s3:"nej", s4:"nej", s5:"skolekørsel",
     s6:"nej", s6b:"nej", s7:"nej", s8:"nej", s9:"nej",
     proevekørt:"ja",
@@ -2683,6 +2687,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
               {key:"postby",label:"Postnr./by *",placeholder:"f.eks. 6000 Kolding"},
               {key:"telefon",label:"Telefon",placeholder:""},
               {key:"email",label:"Email",placeholder:"f.eks. navn@mail.dk"},
+              {key:"cpr",label:"CPR nr.",placeholder:"f.eks. 010190-1234"},
               {key:"km",label:"Kørte km (bekræft eller ret)",placeholder:"f.eks. 12500",type:"number"},
               {key:"pris",label:"Købesum kr. *",placeholder:"f.eks. 45000",type:"number"},
             ].map(f=>(

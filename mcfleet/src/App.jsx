@@ -957,6 +957,86 @@ function LoginScreen({onLogin, fejl}) {
 }
 
 // ── Brugerstyring (kun admin) ──
+function SlutsedlerView({db,fmt}) {
+  const [rows,setRows]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [fejl,setFejl]=useState(null);
+
+  useEffect(()=>{
+    db("signatures?select=id,mc_id,mc_reg,buyer_name,buyer_email,envelope_id,status,created_at,signed_at,mcs(id,reg,beskrivelse)&status=eq.signed&order=signed_at.desc")
+      .then(data=>{ setRows(data); setLoading(false); })
+      .catch(e=>{ setFejl(e.message); setLoading(false); });
+  },[]);
+
+  const fmtDato = (iso) => {
+    if(!iso) return "–";
+    try{ return new Date(iso).toLocaleDateString("da-DK",{day:"2-digit",month:"2-digit",year:"numeric"}); }
+    catch(e){ return iso; }
+  };
+
+  return (
+    <div style={{paddingBottom:32}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+        <div>
+          <h1 style={{margin:0,fontSize:22,fontWeight:700,color:"#fff"}}>Slutsedler</h1>
+          <p style={{margin:"4px 0 0",color:"#888",fontSize:13}}>Alle underskrevne slutsedler</p>
+        </div>
+        {!loading&&!fejl&&(
+          <span style={{background:"#1a1a1a",border:"1px solid #2a2a2a",color:"#888",borderRadius:20,padding:"4px 14px",fontSize:13}}>
+            {rows.length} stk
+          </span>
+        )}
+      </div>
+
+      {loading&&(
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",padding:60,color:"#888",gap:12}}>
+          <div style={{width:24,height:24,border:"3px solid #333",borderTop:"3px solid #cc0000",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+          Henter slutsedler...
+        </div>
+      )}
+      {fejl&&<div style={{color:"#f87171",padding:20,background:"#2d0a0a",borderRadius:8,border:"1px solid #cc000033"}}>Fejl: {fejl}</div>}
+      {!loading&&!fejl&&rows.length===0&&(
+        <div style={{color:"#888",padding:40,textAlign:"center",background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a"}}>Ingen underskrevne slutsedler endnu.</div>
+      )}
+
+      {!loading&&!fejl&&rows.length>0&&(
+        <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
+          {/* Header */}
+          <div style={{display:"grid",gridTemplateColumns:"80px 110px 1fr 1fr 110px 120px",gap:0,padding:"10px 16px",borderBottom:"1px solid #2a2a2a",background:"#141414"}}>
+            {["MC nr.","Reg. nr.","Beskrivelse","Køber","Underskrevet","Dokument"].map(h=>(
+              <div key={h} style={{fontSize:11,fontWeight:700,color:"#666",textTransform:"uppercase",letterSpacing:.6}}>{h}</div>
+            ))}
+          </div>
+          {/* Rækker */}
+          {rows.map((r,i)=>{
+            const mc=r.mcs||{};
+            return (
+              <div key={r.id} style={{display:"grid",gridTemplateColumns:"80px 110px 1fr 1fr 110px 120px",gap:0,padding:"12px 16px",borderBottom:"1px solid #222",background:i%2===0?"#1a1a1a":"#1d1d1d",alignItems:"center"}}>
+                <div style={{fontSize:13,color:"#888",fontWeight:600}}>#{mc.id||r.mc_id||"–"}</div>
+                <div style={{fontSize:13,fontWeight:700,color:"#fff"}}>{r.mc_reg||mc.reg||"–"}</div>
+                <div style={{fontSize:13,color:"#ccc",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",paddingRight:8}}>{mc.beskrivelse||"–"}</div>
+                <div style={{fontSize:13,color:"#ccc",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",paddingRight:8}}>
+                  <div style={{fontWeight:600,color:"#fff"}}>{r.buyer_name||"–"}</div>
+                  <div style={{fontSize:11,color:"#666",marginTop:1}}>{r.buyer_email||""}</div>
+                </div>
+                <div style={{fontSize:12,color:"#888"}}>{fmtDato(r.signed_at||r.created_at)}</div>
+                <div>
+                  {r.envelope_id?(
+                    <a href={`/.netlify/functions/firma-document?id=${r.envelope_id}`} target="_blank" rel="noopener noreferrer"
+                      style={{color:"#7cabff",fontSize:12,textDecoration:"none",padding:"5px 10px",borderRadius:6,border:"1px solid #7cabff33",background:"#1a2a4a",whiteSpace:"nowrap",display:"inline-block"}}>
+                      Åbn dokument
+                    </a>
+                  ):<span style={{color:"#444",fontSize:12}}>–</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BrugerAdmin({brugere,setBrugere,notify}) {
   const [ny,setNy]=useState({brugernavn:"",adgangskode:"",navn:"",rolle:"bruger"});
   const [rediger,setRediger]=useState(null);
@@ -1416,7 +1496,7 @@ export default function App() {
       }
       const h = hash.replace("#", "");
       // #fakturaer, #opgaver, #administration, #brugere
-      if (["fakturaer","opgaver","administration","brugere"].includes(h)) {
+      if (["fakturaer","opgaver","administration","brugere","slutsedler"].includes(h)) {
         setNav(h); setMcModal(null); setEditMc(null); setNyFak(null); setFakDetail(null);
         return;
       }
@@ -1445,7 +1525,7 @@ export default function App() {
 
     // Sæt initial history entry med nuværende hash (eller oversigt)
     const initHash = window.location.hash || "#oversigt";
-    const TOP_LEVEL_NAVS = ["fakturaer","opgaver","administration","brugere"];
+    const TOP_LEVEL_NAVS = ["fakturaer","opgaver","administration","brugere","slutsedler"];
     const initNav = TOP_LEVEL_NAVS.includes(initHash.replace("#","")) ? initHash.replace("#","") : "oversigt";
     window.history.replaceState(
       { nav: initNav, mcModal: null, editMc: null, nyFak: null, fakDetail: null },
@@ -1705,7 +1785,7 @@ export default function App() {
     {id:"planlægning",icon:"📅",label:"Planlægning"},
     {id:"fakturaer",icon:"🧾",label:"Fakturaer"},
     {id:"administration",icon:"⚙️",label:"Administration"},
-    ...(isAdmin?[{id:"brugere",icon:"👥",label:"Brugere"}]:[]),
+    ...(isAdmin?[{id:"brugere",icon:"👥",label:"Brugere"},{id:"slutsedler",icon:"📄",label:"Slutsedler"}]:[]),
   ];
 
   const showingSubpage = mcModal||editMc||nyFak||fakDetail;
@@ -2029,6 +2109,11 @@ export default function App() {
             {/* ── BRUGERE (kun admin) ── */}
             {nav==="brugere"&&isAdmin&&(
               <BrugerAdmin brugere={brugere} setBrugere={setBrugere} notify={notify}/>
+            )}
+
+            {/* ── SLUTSEDLER (kun admin) ── */}
+            {nav==="slutsedler"&&isAdmin&&(
+              <SlutsedlerView db={db} fmt={fmt}/>
             )}
           </div>
         </div>

@@ -2687,7 +2687,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
               {key:"postby",label:"Postnr./by *",placeholder:"f.eks. 6000 Kolding"},
               {key:"telefon",label:"Telefon",placeholder:""},
               {key:"email",label:"Email",placeholder:"f.eks. navn@mail.dk"},
-              {key:"cpr",label:"CPR nr.",placeholder:"f.eks. 010190-1234"},
+              {key:"cpr",label:"CPR nr. *",placeholder:"f.eks. 010190-1234"},
               {key:"km",label:"Kørte km (bekræft eller ret)",placeholder:"f.eks. 12500",type:"number"},
               {key:"pris",label:"Købesum kr. *",placeholder:"f.eks. 45000",type:"number"},
             ].map(f=>(
@@ -2764,7 +2764,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                   </div>
                 </div>
 
-                {sektionHdr("Forsikring")}
+                {sektionHdr("Vi har forsikret MC'en med:")}
                 <div style={{display:"flex",gap:8,marginBottom:8}}>
                   {[["forsForsikrAnsvar","Ansvar"],["forsForsikrKasko","Kasko"]].map(([key,l])=>(
                     <button key={key} onClick={()=>setKøberForm(p=>({...p,[key]:!p[key]}))}
@@ -2778,7 +2778,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
 
                 {sektionHdr("Omregistrering – købers forsikring")}
                 <div style={{marginBottom:8}}>
-                  <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,textTransform:"uppercase",letterSpacing:.5}}>Angiv købers forsikringsselskab</label>
+                  <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,textTransform:"uppercase",letterSpacing:.5}}>Angiv købers forsikringsselskab *</label>
                   <input value={køberForm.køberOmregSelskab} placeholder="f.eks. Tryg Forsikring"
                     onChange={e=>setKøberForm(p=>({...p,køberOmregSelskab:e.target.value}))}
                     style={{...inp,width:"100%",boxSizing:"border-box"}}/>
@@ -2805,6 +2805,14 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
               }
               if(!køberForm.email){
                 alert("Email er påkrævet for digital underskrift");
+                return;
+              }
+              if(!køberForm.cpr){
+                alert("CPR nr. er påkrævet");
+                return;
+              }
+              if(!køberForm.køberOmregSelskab){
+                alert("Angiv købers forsikringsselskab");
                 return;
               }
               const result = await genSlutseddel(mc, køberForm);

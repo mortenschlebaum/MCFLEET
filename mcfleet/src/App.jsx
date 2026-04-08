@@ -2775,19 +2775,6 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                     </button>
                   ))}
                 </div>
-                <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:8}}>
-                  {[
-                    {key:"forsTegnetI",label:"Tegnet i",placeholder:"f.eks. Lokal forsikring"},
-                    {key:"forsPolicenr",label:"Under policenr.",placeholder:"Policenummer"},
-                  ].map(f=>(
-                    <div key={f.key}>
-                      <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,textTransform:"uppercase",letterSpacing:.5}}>{f.label}</label>
-                      <input value={køberForm[f.key]} placeholder={f.placeholder}
-                        onChange={e=>setKøberForm(p=>({...p,[f.key]:e.target.value}))}
-                        style={{...inp,width:"100%",boxSizing:"border-box"}}/>
-                    </div>
-                  ))}
-                </div>
 
                 {sektionHdr("Omregistrering – købers forsikring")}
                 <div style={{marginBottom:8}}>

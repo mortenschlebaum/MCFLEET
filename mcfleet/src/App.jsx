@@ -678,9 +678,6 @@ const genSlutseddel = (mc, køber) => {
     doc.text(synNotes,col2,y);
     y+=synNotes.length*2.8+4;
 
-    // #region agent log
-    fetch('http://127.0.0.1:7249/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9ea238'},body:JSON.stringify({sessionId:'9ea238',hypothesisId:'C-D',location:'App.jsx:pdf-omreg-forsikring',message:'PDF omreg forsikring section reached',data:{y,pageCount:doc.getNumberOfPages(),omregForsikring:køber.køberOmregForsikring,omregSelskab:køber.køberOmregSelskab,køberKeys:Object.keys(køber)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     // Ved omregistrering tegnes der Kasko/Ansvar i Selskab
     txt("Ved omregistrering tegnes der",M,y,7.5,false,[50,50,50]);
     y+=5;
@@ -2700,9 +2697,6 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
 
           {/* Sælger oplyser */}
           {(()=>{
-            // #region agent log
-            fetch('http://127.0.0.1:7249/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9ea238'},body:JSON.stringify({sessionId:'9ea238',hypothesisId:'A-B-D',location:'App.jsx:modal-iife',message:'Modal IIFE rendered - køberForm keys',data:{keys:Object.keys(køberForm),hasOmregForsikring:'køberOmregForsikring' in køberForm,hasOmregSelskab:'køberOmregSelskab' in køberForm,omregForsikring:køberForm.køberOmregForsikring},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             const jnv = (key) => (
               <div style={{display:"flex",gap:4,marginTop:4}}>
                 {[["ja","Ja"],["nej","Nej"],["vednot","Ved ikke"]].map(([v,l])=>(
@@ -2821,9 +2815,6 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                 alert("Email er påkrævet for digital underskrift");
                 return;
               }
-              // #region agent log
-              fetch('http://127.0.0.1:7249/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9ea238'},body:JSON.stringify({sessionId:'9ea238',hypothesisId:'D',location:'App.jsx:genSlutseddel-call',message:'genSlutseddel called with køberForm',data:{omregForsikring:køberForm.køberOmregForsikring,omregSelskab:køberForm.køberOmregSelskab,allKeys:Object.keys(køberForm)},timestamp:Date.now()})}).catch(()=>{});
-              // #endregion
               const result = await genSlutseddel(mc, køberForm);
               if(!result) return;
               setSlutseddelModal(false);

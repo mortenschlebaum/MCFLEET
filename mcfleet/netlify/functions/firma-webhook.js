@@ -37,6 +37,47 @@ async function supaUpdate(envelopeId, patch) {
   });
 }
 
+async function supaGetByEnvelope(envelopeId) {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_KEY;
+  if (!url || !key || !envelopeId) return null;
+  try {
+    const resp = await fetch(
+      `${url}/rest/v1/signatures?envelope_id=eq.${envelopeId}&select=mc_reg,buyer_name,buyer_email&limit=1`,
+      { headers: { apikey: key, Authorization: `Bearer ${key}` } }
+    );
+    const rows = await resp.json();
+    return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+  } catch { return null; }
+}
+
+async function sendSignedNotification(sigRow, signedAt) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key || !sigRow) return;
+  const dato = new Date(signedAt).toLocaleDateString("da-DK");
+  try {
+    const resp = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: "MCFleet <noreply@lisbeth.dk>",
+        to: ["morten.s@lisbeth.dk"],
+        subject: `Slutseddel underskrevet – ${sigRow.mc_reg}`,
+        html: `<p>Slutseddel for <strong>${sigRow.mc_reg}</strong> er nu underskrevet af alle parter.</p>
+               <p><strong>Køber:</strong> ${sigRow.buyer_name} (${sigRow.buyer_email})</p>
+               <p><strong>Underskrevet:</strong> ${dato}</p>
+               <p style="margin-top:16px"><a href="https://mc.lisbeth.dk/#slutsedler">Se slutsedler i MCFleet</a></p>`,
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      console.error("Resend error:", resp.status, err);
+    }
+  } catch (e) {
+    console.error("sendSignedNotification error:", e);
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {
     return { statusCode: 200, body: "OK" };
@@ -71,10 +112,10 @@ exports.handler = async (event) => {
 
   try {
     if (eventType === "signing_request.completed") {
-      await supaUpdate(signingRequestId, {
-        status: "signed",
-        signed_at: data.finished_date || new Date().toISOString(),
-      });
+      const signedAt = data.finished_date || new Date().toISOString();
+      const sigRow = await supaGetByEnvelope(signingRequestId);
+      await supaUpdate(signingRequestId, { status: "signed", signed_at: signedAt });
+      await sendSignedNotification(sigRow, signedAt);
     } else if (eventType === "signing_request.cancelled") {
       await supaUpdate(signingRequestId, { status: "cancelled" });
     } else if (eventType === "signing_request.expired") {

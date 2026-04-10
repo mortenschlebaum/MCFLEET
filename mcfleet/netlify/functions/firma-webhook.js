@@ -53,6 +53,9 @@ async function supaGetByEnvelope(envelopeId) {
 
 async function sendSignedNotification(sigRow, signedAt) {
   const key = process.env.RESEND_API_KEY;
+  // #region agent log
+  console.log(`[DBG-c3a9ce] H-B sendSignedNotification: hasKey=${!!key} hasRow=${!!sigRow}`);
+  // #endregion
   if (!key || !sigRow) return;
   const dato = new Date(signedAt).toLocaleDateString("da-DK");
   try {
@@ -69,12 +72,15 @@ async function sendSignedNotification(sigRow, signedAt) {
                <p style="margin-top:16px"><a href="https://mc.lisbeth.dk/#slutsedler">Se slutsedler i MCFleet</a></p>`,
       }),
     });
+    // #region agent log
+    console.log(`[DBG-c3a9ce] H-D Resend response: status=${resp.status}`);
+    // #endregion
     if (!resp.ok) {
       const err = await resp.text();
-      console.error("Resend error:", resp.status, err);
+      console.error(`[DBG-c3a9ce] H-D Resend error body: ${err}`);
     }
   } catch (e) {
-    console.error("sendSignedNotification error:", e);
+    console.error(`[DBG-c3a9ce] sendSignedNotification exception: ${e}`);
   }
 }
 
@@ -108,12 +114,17 @@ exports.handler = async (event) => {
   const data = payload.data || {};
   const signingRequestId = data.signing_request_id || "";
 
-  console.log(`Firma webhook: ${eventType} for ${signingRequestId}`);
+  // #region agent log
+  console.log(`[DBG-c3a9ce] H-A/H-E webhook reached: eventType="${eventType}" signingRequestId="${signingRequestId}" allKeys=${JSON.stringify(Object.keys(data))}`);
+  // #endregion
 
   try {
     if (eventType === "signing_request.completed") {
       const signedAt = data.finished_date || new Date().toISOString();
       const sigRow = await supaGetByEnvelope(signingRequestId);
+      // #region agent log
+      console.log(`[DBG-c3a9ce] H-C sigRow from Supabase: ${JSON.stringify(sigRow)}`);
+      // #endregion
       await supaUpdate(signingRequestId, { status: "signed", signed_at: signedAt });
       await sendSignedNotification(sigRow, signedAt);
     } else if (eventType === "signing_request.cancelled") {

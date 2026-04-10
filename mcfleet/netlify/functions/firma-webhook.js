@@ -115,7 +115,7 @@ exports.handler = async (event) => {
   const signingRequestId = data.signing_request_id || "";
 
   // #region agent log
-  console.log(`[DBG-c3a9ce] H-A/H-E webhook reached: eventType="${eventType}" signingRequestId="${signingRequestId}" allKeys=${JSON.stringify(Object.keys(data))}`);
+  console.log(`[DBG-c3a9ce] H-A/H-E/H-F webhook reached: eventType="${eventType}" signingRequestId="${signingRequestId}" fullPayloadKeys=${JSON.stringify(Object.keys(payload))} eventsSubscribed=${JSON.stringify(payload.events_subscribed||null)} dataKeys=${JSON.stringify(Object.keys(data))}`);
   // #endregion
 
   try {

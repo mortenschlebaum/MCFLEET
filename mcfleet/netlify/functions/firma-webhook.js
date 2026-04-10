@@ -53,9 +53,6 @@ async function supaGetByEnvelope(envelopeId) {
 
 async function sendSignedNotification(sigRow, signedAt) {
   const key = process.env.RESEND_API_KEY;
-  // #region agent log
-  console.log(`[DBG-c3a9ce] H-B sendSignedNotification: hasKey=${!!key} hasRow=${!!sigRow}`);
-  // #endregion
   if (!key || !sigRow) return;
   const dato = new Date(signedAt).toLocaleDateString("da-DK");
   try {
@@ -72,15 +69,12 @@ async function sendSignedNotification(sigRow, signedAt) {
                <p style="margin-top:16px"><a href="https://mc.lisbeth.dk/#slutsedler">Se slutsedler i MCFleet</a></p>`,
       }),
     });
-    // #region agent log
-    console.log(`[DBG-c3a9ce] H-D Resend response: status=${resp.status}`);
-    // #endregion
     if (!resp.ok) {
       const err = await resp.text();
-      console.error(`[DBG-c3a9ce] H-D Resend error body: ${err}`);
+      console.error("Resend error:", resp.status, err);
     }
   } catch (e) {
-    console.error(`[DBG-c3a9ce] sendSignedNotification exception: ${e}`);
+    console.error("sendSignedNotification error:", e);
   }
 }
 
@@ -110,22 +104,19 @@ exports.handler = async (event) => {
     return { statusCode: 200, body: "OK" };
   }
 
+  // firma.dev bruger "type" feltet (ikke "event_type")
   const eventType = payload.type || payload.event_type || "";
   const data = payload.data || {};
+  // signing_request_id er nestede under data.signing_request.id
   const sr = data.signing_request || {};
   const signingRequestId = sr.id || sr.signing_request_id || data.signing_request_id || "";
 
-  // #region agent log
-  console.log(`[DBG-c3a9ce] H-C2: signingRequestId="${signingRequestId}" srKeys=${JSON.stringify(Object.keys(sr))} srId="${sr.id}" finishedDate="${sr.finished_date||sr.finished_on||""}" dataKeys=${JSON.stringify(Object.keys(data))}`);
-  // #endregion
+  console.log(`Firma webhook: ${eventType} for ${signingRequestId}`);
 
   try {
     if (eventType === "signing_request.completed") {
       const signedAt = sr.finished_date || sr.finished_on || data.finished_date || new Date().toISOString();
       const sigRow = await supaGetByEnvelope(signingRequestId);
-      // #region agent log
-      console.log(`[DBG-c3a9ce] H-C sigRow="${JSON.stringify(sigRow)}" signedAt="${signedAt}"`);
-      // #endregion
       await supaUpdate(signingRequestId, { status: "signed", signed_at: signedAt });
       await sendSignedNotification(sigRow, signedAt);
     } else if (eventType === "signing_request.cancelled") {

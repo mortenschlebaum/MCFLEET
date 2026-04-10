@@ -112,18 +112,19 @@ exports.handler = async (event) => {
 
   const eventType = payload.type || payload.event_type || "";
   const data = payload.data || {};
-  const signingRequestId = data.signing_request_id || "";
+  const sr = data.signing_request || {};
+  const signingRequestId = sr.id || sr.signing_request_id || data.signing_request_id || "";
 
   // #region agent log
-  console.log(`[DBG-c3a9ce] POST-FIX: eventType="${eventType}" signingRequestId="${signingRequestId}" payloadType="${payload.type}" payloadEventType="${payload.event_type}" dataKeys=${JSON.stringify(Object.keys(data))}`);
+  console.log(`[DBG-c3a9ce] H-C2: signingRequestId="${signingRequestId}" srKeys=${JSON.stringify(Object.keys(sr))} srId="${sr.id}" finishedDate="${sr.finished_date||sr.finished_on||""}" dataKeys=${JSON.stringify(Object.keys(data))}`);
   // #endregion
 
   try {
     if (eventType === "signing_request.completed") {
-      const signedAt = data.finished_date || new Date().toISOString();
+      const signedAt = sr.finished_date || sr.finished_on || data.finished_date || new Date().toISOString();
       const sigRow = await supaGetByEnvelope(signingRequestId);
       // #region agent log
-      console.log(`[DBG-c3a9ce] H-C sigRow from Supabase: ${JSON.stringify(sigRow)}`);
+      console.log(`[DBG-c3a9ce] H-C sigRow="${JSON.stringify(sigRow)}" signedAt="${signedAt}"`);
       // #endregion
       await supaUpdate(signingRequestId, { status: "signed", signed_at: signedAt });
       await sendSignedNotification(sigRow, signedAt);

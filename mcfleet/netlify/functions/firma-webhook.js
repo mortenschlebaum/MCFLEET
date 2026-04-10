@@ -110,12 +110,12 @@ exports.handler = async (event) => {
     return { statusCode: 200, body: "OK" };
   }
 
-  const eventType = payload.event_type || "";
+  const eventType = payload.type || payload.event_type || "";
   const data = payload.data || {};
   const signingRequestId = data.signing_request_id || "";
 
   // #region agent log
-  console.log(`[DBG-c3a9ce] H-A/H-E/H-F webhook reached: eventType="${eventType}" signingRequestId="${signingRequestId}" fullPayloadKeys=${JSON.stringify(Object.keys(payload))} eventsSubscribed=${JSON.stringify(payload.events_subscribed||null)} dataKeys=${JSON.stringify(Object.keys(data))}`);
+  console.log(`[DBG-c3a9ce] POST-FIX: eventType="${eventType}" signingRequestId="${signingRequestId}" payloadType="${payload.type}" payloadEventType="${payload.event_type}" dataKeys=${JSON.stringify(Object.keys(data))}`);
   // #endregion
 
   try {

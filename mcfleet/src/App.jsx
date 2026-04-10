@@ -31,7 +31,11 @@ const ECO_DIM = {
   "MC til salg":99,"Solgte MC'er":99,"Lager / Depot":99
 };
 
-const ECO_BASE = "https://restapi.e-conomic.com";
+const ECO_BASE       = "https://restapi.e-conomic.com";
+const ECO_CUST_GROUP = 1;   // e-conomic customer group number
+const ECO_PAY_TERMS  = 1;   // e-conomic payment terms number
+const ECO_VAT_ZONE   = 1;   // e-conomic VAT zone number
+const ECO_MC_PRODUCT = 1210;// product number for MC sales
 
 const ecoApi = async (method, path, body) => {
   const r = await fetch(ECO_BASE + path, {
@@ -961,9 +965,10 @@ function SlutsedlerView({db,fmt}) {
   const [rows,setRows]=useState([]);
   const [loading,setLoading]=useState(true);
   const [fejl,setFejl]=useState(null);
+  const [sending,setSending]=useState({});
 
   useEffect(()=>{
-    db("signatures?select=id,mc_id,mc_reg,buyer_name,buyer_email,envelope_id,status,created_at,signed_at,mcs(id,reg,beskrivelse)&status=eq.signed&order=signed_at.desc")
+    db("signatures?select=id,mc_id,mc_reg,buyer_name,buyer_email,buyer_adresse,buyer_postby,buyer_telefon,pris_kr,eco_draft_id,envelope_id,status,created_at,signed_at,mcs(id,reg,beskrivelse,stel)&status=eq.signed&order=signed_at.desc")
       .then(data=>{ setRows(data); setLoading(false); })
       .catch(e=>{ setFejl(e.message); setLoading(false); });
   },[]);
@@ -973,6 +978,82 @@ function SlutsedlerView({db,fmt}) {
     try{ return new Date(iso).toLocaleDateString("da-DK",{day:"2-digit",month:"2-digit",year:"numeric"}); }
     catch(e){ return iso; }
   };
+
+  const sendEconomicSlutseddel = async (row) => {
+    if(!row.pris_kr) {
+      alert("Denne slutseddel mangler prisoplysninger.\nOpret fakturaen manuelt i e-conomic.");
+      return;
+    }
+    setSending(s=>({...s,[row.id]:true}));
+    try {
+      const mc = row.mcs || {};
+
+      // Opret debitor
+      const nextNum = await ecoApi("GET", "/customers/next-available-number");
+      const custNum = nextNum?.customerNumber || nextNum;
+
+      const postbyStr = row.buyer_postby || "";
+      const spaceIdx = postbyStr.indexOf(" ");
+      const zip  = spaceIdx > 0 ? postbyStr.substring(0, spaceIdx) : postbyStr;
+      const city = spaceIdx > 0 ? postbyStr.substring(spaceIdx + 1) : "";
+
+      await ecoApi("POST", "/customers", {
+        customerNumber: custNum,
+        name: row.buyer_name || "Ukendt køber",
+        address: row.buyer_adresse || "",
+        zip,
+        city,
+        email: row.buyer_email || "",
+        phone: row.buyer_telefon || "",
+        currency: "DKK",
+        customerGroup: { customerGroupNumber: ECO_CUST_GROUP },
+        paymentTerms: { paymentTermsNumber: ECO_PAY_TERMS },
+        vatZone: { vatZoneNumber: ECO_VAT_ZONE },
+      });
+
+      // Byg varelinjebeskrivelse
+      const beskr = [
+        "Salg af MC",
+        mc.beskrivelse || "",
+        mc.stel ? "Stel: " + mc.stel : "",
+        (row.mc_reg || mc.reg) ? "Reg: " + (row.mc_reg || mc.reg) : "",
+      ].filter(Boolean).join(" ").substring(0, 250);
+
+      const today = new Date().toISOString().split("T")[0];
+
+      // Opret faktura kladde
+      const draft = await ecoApi("POST", "/invoices/drafts", {
+        date: today,
+        currency: "DKK",
+        customer: { customerNumber: custNum },
+        lines: [{
+          lineNumber: 1,
+          sortKey: 1,
+          product: { productNumber: ECO_MC_PRODUCT },
+          description: beskr,
+          quantity: 1,
+          unitNetPrice: row.pris_kr,
+        }],
+      });
+
+      const draftId = String(draft?.draftInvoiceNumber || draft?.invoiceNumber || draft?.self?.split("/").pop() || "?");
+
+      // Gem draft ID på signaturen så knappen viser "Sendt"
+      await db("signatures?id=eq." + row.id, {
+        method: "PATCH",
+        prefer: "return=minimal",
+        body: JSON.stringify({ eco_draft_id: draftId }),
+      });
+
+      setRows(prev => prev.map(r => r.id === row.id ? { ...r, eco_draft_id: draftId } : r));
+      alert("Fakturakladde oprettet i e-conomic\nKladenummer: " + draftId + "\nDebitor: " + (row.buyer_name||""));
+    } catch(e) {
+      alert("Fejl ved oprettelse i e-conomic:\n" + e.message);
+    }
+    setSending(s=>({...s,[row.id]:false}));
+  };
+
+  const COLS = "80px 110px 1fr 1fr 110px 120px 150px";
 
   return (
     <div style={{paddingBottom:32}}>
@@ -1002,16 +1083,17 @@ function SlutsedlerView({db,fmt}) {
       {!loading&&!fejl&&rows.length>0&&(
         <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
           {/* Header */}
-          <div style={{display:"grid",gridTemplateColumns:"80px 110px 1fr 1fr 110px 120px",gap:0,padding:"10px 16px",borderBottom:"1px solid #2a2a2a",background:"#141414"}}>
-            {["MC nr.","Reg. nr.","Beskrivelse","Køber","Underskrevet","Dokument"].map(h=>(
+          <div style={{display:"grid",gridTemplateColumns:COLS,gap:0,padding:"10px 16px",borderBottom:"1px solid #2a2a2a",background:"#141414"}}>
+            {["MC nr.","Reg. nr.","Beskrivelse","Køber","Underskrevet","Dokument","E-conomic"].map(h=>(
               <div key={h} style={{fontSize:11,fontWeight:700,color:"#666",textTransform:"uppercase",letterSpacing:.6}}>{h}</div>
             ))}
           </div>
           {/* Rækker */}
           {rows.map((r,i)=>{
             const mc=r.mcs||{};
+            const isSending = sending[r.id];
             return (
-              <div key={r.id} style={{display:"grid",gridTemplateColumns:"80px 110px 1fr 1fr 110px 120px",gap:0,padding:"12px 16px",borderBottom:"1px solid #222",background:i%2===0?"#1a1a1a":"#1d1d1d",alignItems:"center"}}>
+              <div key={r.id} style={{display:"grid",gridTemplateColumns:COLS,gap:0,padding:"12px 16px",borderBottom:"1px solid #222",background:i%2===0?"#1a1a1a":"#1d1d1d",alignItems:"center"}}>
                 <div style={{fontSize:13,color:"#888",fontWeight:600}}>#{mc.id||r.mc_id||"–"}</div>
                 <div style={{fontSize:13,fontWeight:700,color:"#fff"}}>{r.mc_reg||mc.reg||"–"}</div>
                 <div style={{fontSize:13,color:"#ccc",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",paddingRight:8}}>{mc.beskrivelse||"–"}</div>
@@ -1027,6 +1109,24 @@ function SlutsedlerView({db,fmt}) {
                       Åbn dokument
                     </a>
                   ):<span style={{color:"#444",fontSize:12}}>–</span>}
+                </div>
+                <div>
+                  {r.eco_draft_id?(
+                    <span style={{color:"#4ade80",fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #4ade8033",background:"#0a2a1a",whiteSpace:"nowrap",display:"inline-block"}}>
+                      Sendt ✓
+                    </span>
+                  ):!r.pris_kr?(
+                    <span style={{color:"#555",fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #333",background:"#1a1a1a",whiteSpace:"nowrap",display:"inline-block",cursor:"default"}}>
+                      Mangler data
+                    </span>
+                  ):(
+                    <button
+                      onClick={()=>sendEconomicSlutseddel(r)}
+                      disabled={isSending}
+                      style={{color:isSending?"#888":"#fff",fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #cc000044",background:isSending?"#2a2a2a":"#cc0000",whiteSpace:"nowrap",cursor:isSending?"not-allowed":"pointer",display:"inline-block"}}>
+                      {isSending?"Sender...":"Send til e-conomic"}
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -2939,6 +3039,10 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                     mcReg: mc.reg,
                     mcId: mc.id,
                     sigPage: result.totalPages,
+                    buyerAdresse: køberForm.adresse,
+                    buyerPostby: køberForm.postby,
+                    buyerTelefon: køberForm.telefon,
+                    prisKr: Number(String(køberForm.pris||"0").replace(/[^0-9]/g,"")),
                     ...(currentResendId ? { oldSigId: currentResendId } : {}),
                   }),
                 });

@@ -61,7 +61,8 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: JSON.stringify({ error: "Invalid JSON" }) };
   }
 
-  const { pdfBase64, buyerEmail, buyerName, mcReg, mcId, sigPage, oldSigId } = payload;
+  const { pdfBase64, buyerEmail, buyerName, mcReg, mcId, sigPage, oldSigId,
+          buyerAdresse, buyerPostby, buyerTelefon, prisKr } = payload;
   if (!pdfBase64 || !buyerEmail || !buyerName) {
     return { statusCode: 400, body: JSON.stringify({ error: "Missing pdfBase64, buyerEmail, or buyerName" }) };
   }
@@ -142,6 +143,10 @@ exports.handler = async (event) => {
       envelope_id: envelopeId,
       buyer_email: buyerEmail,
       buyer_name: buyerName,
+      buyer_adresse: buyerAdresse || null,
+      buyer_postby: buyerPostby || null,
+      buyer_telefon: buyerTelefon || null,
+      pris_kr: prisKr || null,
       status: "pending",
     });
 

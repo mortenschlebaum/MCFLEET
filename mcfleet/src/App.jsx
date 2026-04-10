@@ -2284,6 +2284,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
   const [kmInlineVal, setKmInlineVal] = React.useState("");
   const [noteText, setNoteText] = React.useState(mc.noter||"");
   const [slutseddelModal, setSlutseddelModal] = React.useState(false);
+  const [resendSigId, setResendSigId] = React.useState(null);
   const [køberForm, setKøberForm] = React.useState({
     navn:"", adresse:"", postby:"", telefon:"", email:"", cpr:"", pris:"", km:"",
     s1:"nej", s2:"nej", s3:"nej", s4:"nej", s5:"skolekørsel",
@@ -2369,7 +2370,21 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
               {sigStatus.buyer_email} · {new Date(sigStatus.created_at).toLocaleDateString("da-DK")}
             </div>
           </div>
-          {sigStatus.envelope_id&&(
+          {(sigStatus.status==="expired"||sigStatus.status==="cancelled")&&isAdmin&&(
+            <button onClick={()=>{
+              setResendSigId(sigStatus.id);
+              setKøberForm(p=>({
+                ...p,
+                km:String(mc.km||""),
+                navn:sigStatus.buyer_name||"",
+                email:sigStatus.buyer_email||"",
+              }));
+              setSlutseddelModal(true);
+            }} style={{color:"#ffa366",fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #ffa36655",background:"#2d1a0a",cursor:"pointer",whiteSpace:"nowrap",fontWeight:600}}>
+              🔄 Gensend
+            </button>
+          )}
+          {sigStatus.envelope_id&&sigStatus.status!=="expired"&&sigStatus.status!=="cancelled"&&(
             <a href={`/.netlify/functions/firma-document?id=${sigStatus.envelope_id}`} target="_blank" rel="noopener noreferrer"
               style={{color:"#7cabff",fontSize:12,textDecoration:"none",padding:"5px 10px",borderRadius:6,border:"1px solid #7cabff33",background:"#1a2a4a",whiteSpace:"nowrap"}}>
               {sigStatus.status==="signed"?"📄 Åbn dokument":"📄 Se status"}
@@ -2736,15 +2751,21 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
     {/* ── SLUTSEDDEL MODAL ── */}
     {slutseddelModal&&(
       <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:600,padding:16}}
-        onClick={()=>setSlutseddelModal(false)}>
+        onClick={()=>{setSlutseddelModal(false);setResendSigId(null);}}>
         <div onClick={e=>e.stopPropagation()} style={{background:"#1a1a1a",borderRadius:12,border:"1px solid #333",padding:24,width:"100%",maxWidth:460,maxHeight:"90vh",overflowY:"auto"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
             <div>
               <div style={{fontWeight:700,fontSize:16,color:"#fff"}}>📄 Slutseddel</div>
               <div style={{fontSize:12,color:"#888",marginTop:2}}>{mc.reg} · {mc.beskrivelse}</div>
             </div>
-            <button onClick={()=>setSlutseddelModal(false)} style={{background:"transparent",border:"none",color:"#888",fontSize:20,cursor:"pointer"}}>✕</button>
+            <button onClick={()=>{setSlutseddelModal(false);setResendSigId(null);}} style={{background:"transparent",border:"none",color:"#888",fontSize:20,cursor:"pointer"}}>✕</button>
           </div>
+
+          {resendSigId&&(
+            <div style={{background:"#2d1a0a",border:"1px solid #ffa36655",borderRadius:8,padding:"8px 12px",marginBottom:16,fontSize:12,color:"#ffa366"}}>
+              🔄 Gensendelse — den tidligere underskriftsanmodning annulleres automatisk. Udfyld og bekræft købers oplysninger nedenfor.
+            </div>
+          )}
 
           {/* Auto-udfyldte MC-data */}
           <div style={{background:"#111",borderRadius:8,padding:12,marginBottom:16,fontSize:12,color:"#888"}}>
@@ -2903,7 +2924,9 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
               }
               const result = await genSlutseddel(mc, køberForm);
               if(!result) return;
+              const currentResendId = resendSigId;
               setSlutseddelModal(false);
+              setResendSigId(null);
               notify("Sender til digital underskrift...");
               try {
                 const resp = await fetch("/.netlify/functions/firma-sign", {
@@ -2916,11 +2939,15 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                     mcReg: mc.reg,
                     mcId: mc.id,
                     sigPage: result.totalPages,
+                    ...(currentResendId ? { oldSigId: currentResendId } : {}),
                   }),
                 });
                 const data = await resp.json();
                 if(data.success) {
-                  notify("Slutseddel sendt til underskrift! Tjek email.");
+                  notify(currentResendId ? "Slutseddel gensendt til underskrift! Tjek email." : "Slutseddel sendt til underskrift! Tjek email.");
+                  db("signatures?mc_id=eq."+mc.id+"&order=created_at.desc&limit=1")
+                    .then(rows=>setSigStatus(rows.length>0?rows[0]:null))
+                    .catch(()=>{});
                 } else {
                   notify("Fejl ved afsendelse: "+(data.error||"ukendt fejl"));
                 }
@@ -2928,9 +2955,9 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                 notify("Kunne ikke sende til underskrift: "+e.message);
               }
             }} style={{...btnRed,flex:1,justifyContent:"center",padding:"12px"}}>
-              ✍ Generer og send til underskrift
+              {resendSigId ? "🔄 Gensend til underskrift" : "✍ Generer og send til underskrift"}
             </button>
-            <button onClick={()=>setSlutseddelModal(false)} style={{...btnGhost,padding:"12px 16px"}}>Annuller</button>
+            <button onClick={()=>{setSlutseddelModal(false);setResendSigId(null);}} style={{...btnGhost,padding:"12px 16px"}}>Annuller</button>
           </div>
         </div>
       </div>

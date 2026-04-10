@@ -28,6 +28,22 @@ async function supaInsert(row) {
   });
 }
 
+async function supaCancel(id) {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_KEY;
+  if (!url || !key || !id) return;
+  await fetch(`${url}/rest/v1/signatures?id=eq.${id}`, {
+    method: "PATCH",
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify({ status: "cancelled" }),
+  });
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: "Method Not Allowed" };
@@ -45,7 +61,7 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: JSON.stringify({ error: "Invalid JSON" }) };
   }
 
-  const { pdfBase64, buyerEmail, buyerName, mcReg, mcId, sigPage } = payload;
+  const { pdfBase64, buyerEmail, buyerName, mcReg, mcId, sigPage, oldSigId } = payload;
   if (!pdfBase64 || !buyerEmail || !buyerName) {
     return { statusCode: 400, body: JSON.stringify({ error: "Missing pdfBase64, buyerEmail, or buyerName" }) };
   }
@@ -115,6 +131,10 @@ exports.handler = async (event) => {
 
     const result = await resp.json();
     const envelopeId = result.id || result.signing_request_id || "";
+
+    if (oldSigId) {
+      await supaCancel(oldSigId);
+    }
 
     await supaInsert({
       mc_id: mcId || null,

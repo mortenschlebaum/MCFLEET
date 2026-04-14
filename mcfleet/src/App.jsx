@@ -900,6 +900,17 @@ const nextFakNr=(fakturaer=[])=>{
 
 const kmColor = km => km>25000?"#ef4444":km>=20000?"#f59e0b":"#22c55e";
 
+const serviceStatus = mc => {
+  const entries = (mc.kmLog||[]).filter(e => e.service);
+  if(!entries.length) return null;
+  const last = entries[entries.length - 1];
+  const kmSiden = (mc.km||0) - (last.km||0);
+  const månSiden = (Date.now() - new Date(last.dato)) / (1000*60*60*24*30.44);
+  if(kmSiden >= 11000 || månSiden >= 11) return "rød";
+  if(kmSiden >= 10000 || månSiden >= 10) return "gul";
+  return "grøn";
+};
+
 // ── shared style helpers ──
 const inp = {padding:"10px 14px",borderRadius:8,border:"1px solid #333",background:"#1a1a1a",color:"#fff",fontSize:14,fontFamily:"inherit",outline:"none",width:"100%",boxSizing:"border-box"};
 const btnRed = {background:"#cc0000",border:"none",color:"#fff",borderRadius:8,padding:"10px 18px",fontWeight:700,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",gap:6,whiteSpace:"nowrap"};
@@ -1722,13 +1733,14 @@ export default function App() {
     notify(nyFotos.length>1?`${nyFotos.length} billeder ✓`:"Billede uploadet ✓");
   };
 
-  const onUpdateKm=async(mcId, nytKm)=>{
+  const onUpdateKm=async(mcId, nytKm, erService=false)=>{
     if(isNaN(nytKm)||nytKm<0) return;
     const mc = mcs.find(m=>m.id===mcId);
     if(!mc) return;
     const gammelKm = mc.km||0;
     const diff = gammelKm===0 ? null : nytKm - gammelKm;
-    const kmLog = [...(mc.kmLog||[]), {dato:todayStr, km:nytKm, diff}];
+    const entry = {dato:todayStr, km:nytKm, diff, ...(erService&&{service:true})};
+    const kmLog = [...(mc.kmLog||[]), entry];
     const opdateret = {...mc, km:nytKm, kmLog};
     setMcs(p=>p.map(m=>m.id===mcId?opdateret:m));
     if(mcModal?.id===mcId) setMcModal(opdateret);
@@ -1799,9 +1811,13 @@ export default function App() {
       setFakDetail(f);
       try{ await db("fakturaer",{method:"POST",body:JSON.stringify(fakToDb(f)),prefer:"return=minimal"}); }
       catch(e){ notify("DB fejl: "+e.message,true); }
-      // Opdater MC's km hvis faktura-km er højere end nuværende
-      if(f.km && f.km > (mc.km||0)) {
-        await onUpdateKm(f.mcId, f.km);
+      // Registrer service-km hvis "Olie og Filter ny" er inkluderet, ellers opdater km normalt
+      const harService = f.linjer.some(l => l.navn === "Olie og Filter ny");
+      const kmFraFak = f.km || mc.km || 0;
+      if(harService) {
+        await onUpdateKm(f.mcId, kmFraFak, true);
+      } else if(f.km && f.km > (mc.km||0)) {
+        await onUpdateKm(f.mcId, f.km, false);
       }
       notify(`${f.id} oprettet ✓`);
     }
@@ -2081,6 +2097,7 @@ export default function App() {
                                       </div>
                                     </div>
                                   </div>
+                                  {(()=>{const ss=serviceStatus(mc);if(!ss)return null;const c=ss==="grøn"?"#22c55e":ss==="gul"?"#f59e0b":"#ef4444";return(<div style={{background:"#111",padding:"2px 8px 5px",display:"flex",alignItems:"center",gap:4}}><span style={{fontSize:11,color:c}}>🔧</span><span style={{fontSize:9,color:c,fontWeight:700,letterSpacing:.5}}>SERVICE</span></div>);})()}
                                 </div>
                               );
                             })}
@@ -2824,6 +2841,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                           <span style={{background:"#1e2a3a",color:"#60a5fa",border:"1px solid #3b82f644",borderRadius:20,padding:"2px 10px",fontSize:11,fontWeight:700}}>START</span>
                         )}
                         {erSenest&&<div style={{fontSize:11,color:"#888",marginTop:4}}>SENESTE</div>}
+                        {entry.service&&<div style={{fontSize:11,color:"#4ade80",background:"#1a2e1a",border:"1px solid #22c55e44",borderRadius:20,padding:"2px 8px",fontWeight:700,marginTop:4,textAlign:"center"}}>🔧 SERVICE</div>}
                       </div>
                     </div>
                   </div>

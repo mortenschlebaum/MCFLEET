@@ -3277,69 +3277,31 @@ function NummerpladeScanner({onResult, onClose, mcs=[]}) {
       return {mc:bedste.mc,score:bedste.score,usikker:false,top3:scores.slice(0,3)};
     };
 
-    // ── Claude Vision API ──
-    const _a="sk-ant-api03-tA0ZhKD";
-    const _b="2EAF4t-yUJcQ83Ydh-lE4rZ3phU0Kc";
-    const _c="6CBmyiScGcD3Q1HOiUn16v07lYCOzbf68pYCKIdhKimDEXIvg-iHug4wAA";
-    const CLAUDE_KEY=_a+_b+_c;
-
-    // Primær OCR med Claude Sonnet — sender hele billedet, streng prompt
+    // ── Claude Vision via Netlify Function (API-nøgle er server-side) ──
     async function claudeOCR(base64img) {
-      const b64 = base64img.replace(/^data:image\/\w+;base64,/, "");
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      const resp = await fetch("/.netlify/functions/plate-ocr", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": CLAUDE_KEY,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 30,
-          messages: [{
-            role: "user",
-            content: [
-              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 }},
-              { type: "text", text: "Find the Danish motorcycle license plate in this photo. Danish MC plates have a white/grey background, red border, blue EU strip with DK on the left. Format: 2 capital letters on top, 5 digits on bottom. Examples: EH49704, AX59119, EH50188, DZ46431, DD70407. Reply with ONLY the 7 characters, no spaces. If no plate found: INGEN" }
-            ]
-          }]
-        })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: base64img, mode: "strict" }),
       });
       if (!resp.ok) {
         const errTxt = await resp.text().catch(()=>"");
-        throw new Error("API fejl " + resp.status + " " + errTxt.substring(0,100));
+        throw new Error("OCR fejl " + resp.status + " " + errTxt.substring(0,100));
       }
       const data = await resp.json();
-      return data.content?.[0]?.text?.trim() || "";
+      return data.tekst || "";
     }
 
     // Blød fallback OCR — bedste gæt selv ved delvist synlig/sløret plade
     async function claudeOCRBlød(base64img) {
-      const b64 = base64img.replace(/^data:image\/\w+;base64,/, "");
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      const resp = await fetch("/.netlify/functions/plate-ocr", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": CLAUDE_KEY,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 30,
-          messages: [{
-            role: "user",
-            content: [
-              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 }},
-              { type: "text", text: "Look carefully for any Danish motorcycle license plate in this photo, even if blurry or at an angle. Danish plates: 2 letters + 5 digits, white background, red border. Give your best guess at the characters. Reply with ONLY what you can read (letters and digits). If truly nothing visible: INGEN" }
-            ]
-          }]
-        })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: base64img, mode: "blød" }),
       });
-      if (!resp.ok) throw new Error("API fejl " + resp.status);
+      if (!resp.ok) throw new Error("OCR fejl " + resp.status);
       const data = await resp.json();
-      return data.content?.[0]?.text?.trim() || "";
+      return data.tekst || "";
     }
 
 

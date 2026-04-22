@@ -2495,6 +2495,10 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                 km:String(mc.km||""),
                 navn:sigStatus.buyer_name||"",
                 email:sigStatus.buyer_email||"",
+                adresse:sigStatus.buyer_adresse||"",
+                postby:sigStatus.buyer_postby||"",
+                telefon:sigStatus.buyer_telefon||"",
+                pris:sigStatus.pris_kr?String(sigStatus.pris_kr):"",
               }));
               setSlutseddelModal(true);
             }} style={{color:"#ffa366",fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #ffa36655",background:"#2d1a0a",cursor:"pointer",whiteSpace:"nowrap",fontWeight:600}}>

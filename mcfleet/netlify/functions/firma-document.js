@@ -32,18 +32,30 @@ exports.handler = async (event) => {
       || sr.document_only_download_url
       || null;
 
-    if (isFinished && id) {
-      const sUrl = process.env.SUPABASE_URL;
-      const sKey = process.env.SUPABASE_SERVICE_KEY;
-      if (sUrl && sKey) {
-        try {
+    const sUrl = process.env.SUPABASE_URL;
+    const sKey = process.env.SUPABASE_SERVICE_KEY;
+    if (id && sUrl && sKey) {
+      try {
+        if (isFinished) {
           await fetch(`${sUrl}/rest/v1/signatures?envelope_id=eq.${id}&status=eq.pending`, {
             method: "PATCH",
             headers: { apikey: sKey, Authorization: `Bearer ${sKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
             body: JSON.stringify({ status: "signed", signed_at: sr.timestamps?.finished_on || new Date().toISOString() }),
           });
-        } catch (_) {}
-      }
+        } else if (sr.status?.expired) {
+          await fetch(`${sUrl}/rest/v1/signatures?envelope_id=eq.${id}&status=eq.pending`, {
+            method: "PATCH",
+            headers: { apikey: sKey, Authorization: `Bearer ${sKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+            body: JSON.stringify({ status: "expired" }),
+          });
+        } else if (sr.status?.cancelled) {
+          await fetch(`${sUrl}/rest/v1/signatures?envelope_id=eq.${id}&status=eq.pending`, {
+            method: "PATCH",
+            headers: { apikey: sKey, Authorization: `Bearer ${sKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+            body: JSON.stringify({ status: "cancelled" }),
+          });
+        }
+      } catch (_) {}
     }
 
     if (isFinished && signedDocUrl) {

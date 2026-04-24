@@ -36,6 +36,7 @@ const ECO_CUST_GROUP = 1;   // e-conomic customer group number
 const ECO_PAY_TERMS  = 1;   // e-conomic payment terms number
 const ECO_VAT_ZONE   = 1;   // e-conomic VAT zone number
 const ECO_MC_PRODUCT = 1210;// product number for MC sales
+const ECO_LAYOUT     = 1;   // e-conomic invoice layout number
 
 const ecoApi = async (method, path, body) => {
   const r = await fetch(ECO_BASE + path, {
@@ -1030,19 +1031,26 @@ function SlutsedlerView({db,fmt}) {
       const today = new Date().toISOString().split("T")[0];
 
       // Opret faktura kladde
-      const draft = await ecoApi("POST", "/invoices/drafts", {
+      // #region agent log
+      const draftPayload = {
         date: today,
         currency: "DKK",
         customer: { customerNumber: custNum },
+        recipient: { name: row.buyer_name||"Ukendt", address: row.buyer_adresse||"", zip, city, vatZone: { vatZoneNumber: ECO_VAT_ZONE } },
+        paymentTerms: { paymentTermsNumber: ECO_PAY_TERMS },
+        layout: { layoutNumber: ECO_LAYOUT },
         lines: [{
           lineNumber: 1,
           sortKey: 1,
-          product: { productNumber: ECO_MC_PRODUCT },
+          product: { productNumber: String(ECO_MC_PRODUCT) },
           description: beskr,
           quantity: 1,
           unitNetPrice: row.pris_kr,
         }],
-      });
+      };
+      fetch('http://127.0.0.1:7249/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7b0883'},body:JSON.stringify({sessionId:'7b0883',location:'App.jsx:draftPayload',message:'invoice draft payload',data:draftPayload,timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      const draft = await ecoApi("POST", "/invoices/drafts", draftPayload);
 
       const draftId = String(draft?.draftInvoiceNumber || draft?.invoiceNumber || draft?.self?.split("/").pop() || "?");
 

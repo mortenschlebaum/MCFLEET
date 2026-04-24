@@ -999,17 +999,13 @@ function SlutsedlerView({db,fmt}) {
     try {
       const mc = row.mcs || {};
 
-      // Opret debitor
-      const nextNum = await ecoApi("GET", "/customers/next-available-number");
-      const custNum = nextNum?.customerNumber || nextNum;
-
+      // Opret debitor — lad e-conomic auto-tildele kundenummer
       const postbyStr = row.buyer_postby || "";
       const spaceIdx = postbyStr.indexOf(" ");
       const zip  = spaceIdx > 0 ? postbyStr.substring(0, spaceIdx) : postbyStr;
       const city = spaceIdx > 0 ? postbyStr.substring(spaceIdx + 1) : "";
 
-      await ecoApi("POST", "/customers", {
-        customerNumber: custNum,
+      const newCustomer = await ecoApi("POST", "/customers", {
         name: row.buyer_name || "Ukendt køber",
         address: row.buyer_adresse || "",
         zip,
@@ -1021,6 +1017,7 @@ function SlutsedlerView({db,fmt}) {
         paymentTerms: { paymentTermsNumber: ECO_PAY_TERMS },
         vatZone: { vatZoneNumber: ECO_VAT_ZONE },
       });
+      const custNum = newCustomer?.customerNumber;
 
       // Byg varelinjebeskrivelse
       const beskr = [

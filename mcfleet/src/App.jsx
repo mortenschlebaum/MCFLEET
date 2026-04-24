@@ -1031,8 +1031,7 @@ function SlutsedlerView({db,fmt}) {
       const today = new Date().toISOString().split("T")[0];
 
       // Opret faktura kladde
-      // #region agent log
-      const draftPayload = {
+      const draft = await ecoApi("POST", "/invoices/drafts", {
         date: today,
         currency: "DKK",
         customer: { customerNumber: custNum },
@@ -1047,10 +1046,7 @@ function SlutsedlerView({db,fmt}) {
           quantity: 1,
           unitNetPrice: row.pris_kr,
         }],
-      };
-      fetch('http://127.0.0.1:7249/ingest/51db5941-ab4f-4f63-810a-41abc8b01629',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7b0883'},body:JSON.stringify({sessionId:'7b0883',location:'App.jsx:draftPayload',message:'invoice draft payload',data:draftPayload,timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-      const draft = await ecoApi("POST", "/invoices/drafts", draftPayload);
+      });
 
       const draftId = String(draft?.draftInvoiceNumber || draft?.invoiceNumber || draft?.self?.split("/").pop() || "?");
 

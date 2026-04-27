@@ -2539,10 +2539,10 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
             <div style={{marginBottom:14,padding:"8px 12px",borderRadius:6,background:"#111",border:"1px solid #333"}}>
               {signers.map((s,i)=>(
                 <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0",borderBottom:i<signers.length-1?"1px solid #222":"none"}}>
-                  <span style={{fontSize:14}}>{s.signed?"✅":"⏳"}</span>
+                  <span style={{fontSize:14}}>{s.declined?"❌":s.signed?"✅":"⏳"}</span>
                   <div>
-                    <div style={{color:s.signed?"#6ee7b7":"#ffd166",fontSize:12,fontWeight:600}}>{s.name}</div>
-                    <div style={{color:"#666",fontSize:11}}>{s.email}{s.signed&&s.signed_at?" · underskrevet "+new Date(s.signed_at).toLocaleDateString("da-DK"):""}</div>
+                    <div style={{color:s.declined?"#f87171":s.signed?"#6ee7b7":"#ffd166",fontSize:12,fontWeight:600}}>{s.name}</div>
+                    <div style={{color:"#666",fontSize:11}}>{s.email}{s.signed&&s.signed_at?" · underskrevet "+new Date(s.signed_at).toLocaleDateString("da-DK"):s.declined?" · afslog underskrift":""}</div>
                   </div>
                 </div>
               ))}

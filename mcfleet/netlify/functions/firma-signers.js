@@ -16,7 +16,8 @@ exports.handler = async (event) => {
   }
 
   try {
-    const resp = await fetch(`${FIRMA_API}/signing-requests/${id}`, {
+    // Hent individuelle underskriverstatus via /users endpoint
+    const resp = await fetch(`${FIRMA_API}/signing-requests/${id}/users`, {
       headers: { Authorization: `Bearer ${FIRMA_KEY}` },
     });
 
@@ -28,56 +29,24 @@ exports.handler = async (event) => {
       };
     }
 
-    const sr = await resp.json();
+    const data = await resp.json();
+    const users = Array.isArray(data.results) ? data.results : [];
 
-    // Log rå recipients for fejlfinding første gang
-    console.log("firma-signers sr.recipients:", JSON.stringify(sr.recipients));
-    console.log("firma-signers sr.status:", JSON.stringify(sr.status));
-
-    // Returner rå sr-nøgler og recipients for at debugge hvad Firma.dev faktisk sender
-    const srKeys = Object.keys(sr);
-    const rawRecipients = sr.recipients || sr.signers || sr.users || null;
-
-    const recipients = Array.isArray(rawRecipients) ? rawRecipients : [];
-
-    const signers = recipients.map((r) => {
-      const firstName = r.first_name || r.firstName || "";
-      const lastName  = r.last_name  || r.lastName  || "";
-      const name      = [firstName, lastName].filter(Boolean).join(" ") || r.name || r.email || "Ukendt";
-      const email     = r.email || "";
-
-      const signedAt =
-        r.signed_at              ||
-        r.signedAt               ||
-        r.finished_at            ||
-        r.date_signed            ||
-        r.timestamps?.signed_on  ||
-        r.timestamps?.finished_on ||
-        null;
-
-      const signed =
-        r.signed === true         ||
-        r.has_signed === true     ||
-        r.status === "signed"     ||
-        r.status === "finished"   ||
-        r.status === "completed"  ||
-        signedAt !== null;
-
-      return { name, email, signed, signed_at: signedAt, _raw: r };
-    });
-
-    const topStatus =
-      typeof sr.status === "string"
-        ? sr.status
-        : sr.status?.finished  ? "finished"
-        : sr.status?.cancelled ? "cancelled"
-        : sr.status?.expired   ? "expired"
-        : "in_progress";
+    const signers = users
+      .filter(u => u.designation === "Signer" || u.designation === "Approver" || !u.designation)
+      .map(u => ({
+        name: u.name || [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email || "Ukendt",
+        email: u.email || "",
+        signed: u.finished_on !== null && u.finished_on !== undefined,
+        signed_at: u.finished_on || null,
+        declined: u.declined_on !== null && u.declined_on !== undefined,
+        order: u.order || null,
+      }));
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: topStatus, signers, _debug: { srKeys, rawRecipients } }),
+      body: JSON.stringify({ signers }),
     };
   } catch (err) {
     console.error("firma-signers error:", err);

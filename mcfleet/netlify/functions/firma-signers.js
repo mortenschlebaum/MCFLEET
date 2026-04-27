@@ -34,21 +34,24 @@ exports.handler = async (event) => {
     console.log("firma-signers sr.recipients:", JSON.stringify(sr.recipients));
     console.log("firma-signers sr.status:", JSON.stringify(sr.status));
 
-    const recipients = Array.isArray(sr.recipients) ? sr.recipients : [];
+    // Returner rå sr-nøgler og recipients for at debugge hvad Firma.dev faktisk sender
+    const srKeys = Object.keys(sr);
+    const rawRecipients = sr.recipients || sr.signers || sr.users || null;
+
+    const recipients = Array.isArray(rawRecipients) ? rawRecipients : [];
 
     const signers = recipients.map((r) => {
-      // Firma.dev returnerer muligvis forskellige feltnavne afhængigt af API-version
       const firstName = r.first_name || r.firstName || "";
       const lastName  = r.last_name  || r.lastName  || "";
       const name      = [firstName, lastName].filter(Boolean).join(" ") || r.name || r.email || "Ukendt";
       const email     = r.email || "";
 
-      // Tjek underskrevet: prøv kendte feltnavne
       const signedAt =
-        r.signed_at       ||
-        r.signedAt        ||
-        r.finished_at     ||
-        r.timestamps?.signed_on ||
+        r.signed_at              ||
+        r.signedAt               ||
+        r.finished_at            ||
+        r.date_signed            ||
+        r.timestamps?.signed_on  ||
         r.timestamps?.finished_on ||
         null;
 
@@ -57,12 +60,12 @@ exports.handler = async (event) => {
         r.has_signed === true     ||
         r.status === "signed"     ||
         r.status === "finished"   ||
+        r.status === "completed"  ||
         signedAt !== null;
 
-      return { name, email, signed, signed_at: signedAt };
+      return { name, email, signed, signed_at: signedAt, _raw: r };
     });
 
-    // Top-niveau status
     const topStatus =
       typeof sr.status === "string"
         ? sr.status
@@ -74,7 +77,7 @@ exports.handler = async (event) => {
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: topStatus, signers }),
+      body: JSON.stringify({ status: topStatus, signers, _debug: { srKeys, rawRecipients } }),
     };
   } catch (err) {
     console.error("firma-signers error:", err);

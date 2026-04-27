@@ -4578,6 +4578,8 @@ function FakturaDetalje({faktura,onBack,onRediger,onSætFaktureret,fmt,btnGhost,
 
       setSendtStatus("ok");
       notify && notify("✓ Sendt til e-conomic — bilag " + (vNr||"?") + " i kassekladde " + ECO_KLADDE);
+      await onSætFaktureret(faktura.id, true);
+      setTimeout(() => onBack(), 1200);
     } catch(e) {
       setSendtStatus("fejl");
       notify && notify("e-conomic fejl: " + e.message, true);

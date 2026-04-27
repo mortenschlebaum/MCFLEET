@@ -2426,6 +2426,21 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
       .then(rows=>setSigStatus(rows.length>0?rows[0]:null))
       .catch(()=>{});
   },[mc.id]);
+  const [signers, setSigners]=React.useState(null);
+  const [signersLoading, setSignersLoading]=React.useState(false);
+  const [signersError, setSignersError]=React.useState(null);
+  const hentUnderskrivere=async(envelopeId)=>{
+    setSignersLoading(true);
+    setSignersError(null);
+    setSigners(null);
+    try{
+      const r=await fetch(`/.netlify/functions/firma-signers?id=${envelopeId}`);
+      const json=await r.json();
+      if(json.error){setSignersError(json.error);}
+      else{setSigners(json.signers||[]);}
+    }catch(e){setSignersError("Netværksfejl");}
+    finally{setSignersLoading(false);}
+  };
   const [visOpgForm,setVisOpgForm]=React.useState(false);
   const [opgForm,setOpgForm]=React.useState({beskrivelse:"",senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
 
@@ -2476,43 +2491,70 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
       </div>
 
       {sigStatus&&(
-        <div style={{marginBottom:14,padding:"10px 14px",borderRadius:8,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",
-          background:sigStatus.status==="signed"?"#0a2d1a":sigStatus.status==="cancelled"?"#2d0a0a":sigStatus.status==="expired"?"#2d1a0a":"#2d1f00",
-          border:`1px solid ${sigStatus.status==="signed"?"#22a06b55":sigStatus.status==="cancelled"?"#cc000055":sigStatus.status==="expired"?"#cc660055":"#e6a81755"}`}}>
-          <span style={{fontSize:14}}>{sigStatus.status==="signed"?"✅":sigStatus.status==="cancelled"?"❌":sigStatus.status==="expired"?"⏰":"✍️"}</span>
-          <div style={{flex:1}}>
-            <div style={{color:sigStatus.status==="signed"?"#6ee7b7":sigStatus.status==="cancelled"?"#f87171":sigStatus.status==="expired"?"#ffa366":"#ffd166",fontSize:13,fontWeight:600}}>
-              {sigStatus.status==="signed"?"Slutseddel underskrevet":sigStatus.status==="cancelled"?"Underskrift annulleret":sigStatus.status==="expired"?"Underskrift udløbet":"Afventer underskrift"}
+        <>
+          <div style={{marginBottom:signers||signersError?4:14,padding:"10px 14px",borderRadius:8,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",
+            background:sigStatus.status==="signed"?"#0a2d1a":sigStatus.status==="cancelled"?"#2d0a0a":sigStatus.status==="expired"?"#2d1a0a":"#2d1f00",
+            border:`1px solid ${sigStatus.status==="signed"?"#22a06b55":sigStatus.status==="cancelled"?"#cc000055":sigStatus.status==="expired"?"#cc660055":"#e6a81755"}`}}>
+            <span style={{fontSize:14}}>{sigStatus.status==="signed"?"✅":sigStatus.status==="cancelled"?"❌":sigStatus.status==="expired"?"⏰":"✍️"}</span>
+            <div style={{flex:1}}>
+              <div style={{color:sigStatus.status==="signed"?"#6ee7b7":sigStatus.status==="cancelled"?"#f87171":sigStatus.status==="expired"?"#ffa366":"#ffd166",fontSize:13,fontWeight:600}}>
+                {sigStatus.status==="signed"?"Slutseddel underskrevet":sigStatus.status==="cancelled"?"Underskrift annulleret":sigStatus.status==="expired"?"Underskrift udløbet":"Afventer underskrift"}
+              </div>
+              <div style={{color:"#888",fontSize:11,marginTop:1}}>
+                {sigStatus.buyer_email} · {new Date(sigStatus.created_at).toLocaleDateString("da-DK")}
+              </div>
             </div>
-            <div style={{color:"#888",fontSize:11,marginTop:1}}>
-              {sigStatus.buyer_email} · {new Date(sigStatus.created_at).toLocaleDateString("da-DK")}
-            </div>
+            {(sigStatus.status==="expired"||sigStatus.status==="cancelled")&&isAdmin&&(
+              <button onClick={()=>{
+                setResendSigId(sigStatus.id);
+                setKøberForm(p=>({
+                  ...p,
+                  km:String(mc.km||""),
+                  navn:sigStatus.buyer_name||"",
+                  email:sigStatus.buyer_email||"",
+                  adresse:sigStatus.buyer_adresse||"",
+                  postby:sigStatus.buyer_postby||"",
+                  telefon:sigStatus.buyer_telefon||"",
+                  pris:sigStatus.pris_kr?String(sigStatus.pris_kr):"",
+                }));
+                setSlutseddelModal(true);
+              }} style={{color:"#ffa366",fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #ffa36655",background:"#2d1a0a",cursor:"pointer",whiteSpace:"nowrap",fontWeight:600}}>
+                🔄 Gensend
+              </button>
+            )}
+            {sigStatus.envelope_id&&sigStatus.status!=="expired"&&sigStatus.status!=="cancelled"&&(
+              <a href={`/.netlify/functions/firma-document?id=${sigStatus.envelope_id}`} target="_blank" rel="noopener noreferrer"
+                style={{color:"#7cabff",fontSize:12,textDecoration:"none",padding:"5px 10px",borderRadius:6,border:"1px solid #7cabff33",background:"#1a2a4a",whiteSpace:"nowrap"}}>
+                {sigStatus.status==="signed"?"📄 Åbn dokument":"📄 Se status"}
+              </a>
+            )}
+            {sigStatus.status==="pending"&&isAdmin&&sigStatus.envelope_id&&(
+              <button onClick={()=>hentUnderskrivere(sigStatus.envelope_id)}
+                style={{color:"#ffd166",fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #ffd16655",background:"#2d1f00",cursor:"pointer",whiteSpace:"nowrap",fontWeight:600}}>
+                {signersLoading?"⏳ Henter...":"👥 Hvem mangler?"}
+              </button>
+            )}
           </div>
-          {(sigStatus.status==="expired"||sigStatus.status==="cancelled")&&isAdmin&&(
-            <button onClick={()=>{
-              setResendSigId(sigStatus.id);
-              setKøberForm(p=>({
-                ...p,
-                km:String(mc.km||""),
-                navn:sigStatus.buyer_name||"",
-                email:sigStatus.buyer_email||"",
-                adresse:sigStatus.buyer_adresse||"",
-                postby:sigStatus.buyer_postby||"",
-                telefon:sigStatus.buyer_telefon||"",
-                pris:sigStatus.pris_kr?String(sigStatus.pris_kr):"",
-              }));
-              setSlutseddelModal(true);
-            }} style={{color:"#ffa366",fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #ffa36655",background:"#2d1a0a",cursor:"pointer",whiteSpace:"nowrap",fontWeight:600}}>
-              🔄 Gensend
-            </button>
+          {signers&&signers.length>0&&(
+            <div style={{marginBottom:14,padding:"8px 12px",borderRadius:6,background:"#111",border:"1px solid #333"}}>
+              {signers.map((s,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0",borderBottom:i<signers.length-1?"1px solid #222":"none"}}>
+                  <span style={{fontSize:14}}>{s.signed?"✅":"⏳"}</span>
+                  <div>
+                    <div style={{color:s.signed?"#6ee7b7":"#ffd166",fontSize:12,fontWeight:600}}>{s.name}</div>
+                    <div style={{color:"#666",fontSize:11}}>{s.email}{s.signed&&s.signed_at?" · underskrevet "+new Date(s.signed_at).toLocaleDateString("da-DK"):""}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
-          {sigStatus.envelope_id&&sigStatus.status!=="expired"&&sigStatus.status!=="cancelled"&&(
-            <a href={`/.netlify/functions/firma-document?id=${sigStatus.envelope_id}`} target="_blank" rel="noopener noreferrer"
-              style={{color:"#7cabff",fontSize:12,textDecoration:"none",padding:"5px 10px",borderRadius:6,border:"1px solid #7cabff33",background:"#1a2a4a",whiteSpace:"nowrap"}}>
-              {sigStatus.status==="signed"?"📄 Åbn dokument":"📄 Se status"}
-            </a>
+          {signersError&&(
+            <div style={{marginBottom:14,color:"#f87171",fontSize:11,padding:"4px 12px"}}>Fejl: {signersError}</div>
           )}
-        </div>
+          {signers&&signers.length===0&&(
+            <div style={{marginBottom:14,color:"#888",fontSize:11,padding:"4px 12px"}}>Ingen underskriverdata tilgængelig fra Firma.dev.</div>
+          )}
+        </>
       )}
 
       <div className="detail-grid" style={{display:"grid",gridTemplateColumns:"300px 1fr",gap:16}}>

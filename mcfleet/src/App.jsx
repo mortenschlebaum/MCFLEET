@@ -119,6 +119,7 @@ const mcFromDb = r => ({
   id: Number(r.id), mcNr: r.mc_nr, reg: r.reg, stel: r.stel,
   gps: r.gps||"", syn: r.syn, km: r.km, location: r.location,
   beskrivelse: r.beskrivelse||"", foto: r.foto||"",
+  thumb: r.thumb||"",
   fotos: Array.isArray(r.fotos) ? r.fotos : (r.foto ? [r.foto] : []),
   foersteReg: r.foerste_reg||"",
   naesteSyn: r.naeste_syn||"",
@@ -132,6 +133,7 @@ const mcToDb = m => {
     gps: m.gps||"", syn: m.syn||"", km: m.km||0, location: m.location||"",
     beskrivelse: m.beskrivelse||"", foto: m.foto||"",
     fotos: m.fotos||[],
+    thumb: m.thumb||"",
     noter: m.noter||"",
     type: m.type||"MC",
     lokations_log: m.lokationsLog||[], km_log: m.kmLog||[],
@@ -268,6 +270,25 @@ const fixOgKomprimer = (file, callback, maxPx=1200, kvalitet=0.82) => {
   };
   reader.readAsArrayBuffer(file);
 };
+
+// Generér et lille thumbnail (til oversigtskort) ud fra en billede-dataURL.
+// Returnerer en lille base64 JPEG (~2-6 KB) — eller "" hvis input mangler/fejler.
+const lavThumb = (dataUrl, maxPx=160, kvalitet=0.55) => new Promise(resolve => {
+  if(!dataUrl) return resolve("");
+  const img = new Image();
+  img.onload = () => {
+    try {
+      const c = document.createElement("canvas");
+      const ratio = Math.min(maxPx/img.width, maxPx/img.height, 1);
+      c.width = Math.round(img.width*ratio);
+      c.height = Math.round(img.height*ratio);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL("image/jpeg", kvalitet));
+    } catch(e) { resolve(""); }
+  };
+  img.onerror = () => resolve("");
+  img.src = dataUrl;
+});
 
 // ── PDF GENERATOR ──────────────────────────────────────────────────────────────
 const genPDF = (faktura) => {
@@ -1311,10 +1332,13 @@ export default function App() {
         // ── FASE 1: Kritisk data — brugere + MC'er ──
         const fetchMcs = async (attempt=1) => {
           try {
-            return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn,noter,type&order=id");
+            // Henter bevidst IKKE foto/fotos (tunge base64) — kun det lette thumb til oversigten.
+            // Fuldstørrelses-fotos hentes lazy når en MC åbnes (onLazyFotoLoad).
+            return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,thumb,lokations_log,km_log,foerste_reg,naeste_syn,noter,type&order=id");
           } catch(e1) {
             try {
-              return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,lokations_log,km_log,foerste_reg,naeste_syn,noter,type&order=id");
+              // Fallback hvis thumb-kolonnen endnu ikke er kørt som migration
+              return await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,lokations_log,km_log,foerste_reg,naeste_syn,noter,type&order=id");
             } catch(e2) {
               if(attempt < 3) {
                 await new Promise(r=>setTimeout(r, 2000*attempt));
@@ -1393,13 +1417,32 @@ export default function App() {
             }catch(e){ console.error("Seed fejl MC",mc.id,e); }
           }
           // Hent dem tilbage efter seed
-          const seeded = await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,foto,fotos,lokations_log,km_log,foerste_reg,naeste_syn,noter,type&order=id");
+          const seeded = await db("mcs?select=id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,thumb,lokations_log,km_log,foerste_reg,naeste_syn,noter,type&order=id");
           setMcs(seeded.map(mcFromDb));
         }
         // Seed ydelser hvis DB er tom
         if(dbYd.length===0){
           await db("ydelser",{method:"POST",body:JSON.stringify(INIT_YDELSER.map(ydToDb)),prefer:"return=minimal"});
         }
+
+        // ── BACKFILL: generér manglende thumbnails i baggrunden (engangs pr. MC) ──
+        // Kører kun for MC'er hvor thumb endnu er NULL. Når en MC har fået sat thumb
+        // (en værdi eller ''), matcher den ikke længere og springes over ved næste load.
+        (async () => {
+          for(let batch=0; batch<60; batch++){
+            let rows;
+            try { rows = await db("mcs?select=id,foto&thumb=is.null&limit=40"); }
+            catch(e){ return; } // thumb-kolonnen findes ikke endnu — migration mangler
+            if(!rows || !rows.length) return;
+            for(const r of rows){
+              const t = r.foto ? await lavThumb(r.foto) : "";
+              try {
+                await db(`mcs?id=eq.${r.id}`,{method:"PATCH",body:JSON.stringify({thumb: t||""}),prefer:"return=minimal"});
+                if(t) setMcs(p=>p.map(m=>String(m.id)===String(r.id)?{...m,thumb:t}:m));
+              } catch(e){ return; } // stop ved fejl så vi ikke looper i det uendelige
+            }
+          }
+        })();
       } catch(e){
         console.error("DB load fejl:",e);
         clearTimeout(loadTimeout);
@@ -1696,13 +1739,16 @@ export default function App() {
       }
       endelig={...gammel,...opdateret,kmLog,lokationsLog};
       setMcs(p=>p.map(m=>String(m.id)===String(endelig.id)?endelig:m));
+      // Rør IKKE foto/fotos/thumb her — de styres kun af onFotoUpload/backfill.
+      // (Vigtigt nu hvor foto hentes lazy: en metadata-rettelse må ikke slette billedet.)
+      const {foto:_f, fotos:_fs, thumb:_t, ...patchBody} = mcToDb(endelig);
       try{
-        await db(`mcs?id=eq.${endelig.id}`,{method:"PATCH",body:JSON.stringify(mcToDb(endelig)),prefer:"return=minimal"});
+        await db(`mcs?id=eq.${endelig.id}`,{method:"PATCH",body:JSON.stringify(patchBody),prefer:"return=minimal"});
       } catch(e){
         // Hvis 500: foerste_reg kolonnen mangler måske — prøv uden den
         if(e.message?.includes("500")) {
           try {
-            const {foerste_reg:_fr, ...udenFoerste} = mcToDb(endelig);
+            const {foerste_reg:_fr, ...udenFoerste} = patchBody;
             await db(`mcs?id=eq.${endelig.id}`,{method:"PATCH",body:JSON.stringify(udenFoerste),prefer:"return=minimal"});
             notify("Gem OK — kør SQL: ALTER TABLE mcs ADD COLUMN foerste_reg TEXT DEFAULT ''",true);
           } catch(e2){ notify("DB fejl: "+e2.message,true); }
@@ -1714,7 +1760,9 @@ export default function App() {
         kmLog:nyKm>0?[{dato:todayStr,km:nyKm,diff:null}]:[],
       };
       setMcs(p=>[...p,endelig]);
-      try{ await db("mcs",{method:"POST",body:JSON.stringify(mcToDb(endelig)),prefer:"return=minimal"}); }
+      // thumb udelades ved oprettelse — sættes af onFotoUpload når et billede tilføjes
+      const {thumb:_nt, ...nyBody} = mcToDb(endelig);
+      try{ await db("mcs",{method:"POST",body:JSON.stringify(nyBody),prefer:"return=minimal"}); }
       catch(e){ notify("DB fejl: "+e.message,true); }
     }
     notify(_erNy?"MC oprettet ✓":"MC opdateret ✓");
@@ -1725,12 +1773,21 @@ export default function App() {
     // fotosArr = alle billeder inkl. det nye. dataUrl = primær (første) billede
     const nyFotos = fotosArr || (dataUrl ? [dataUrl] : []);
     const primærFoto = nyFotos[0] || "";
-    setMcs(p=>p.map(m=>m.id===mcId?{...m,foto:primærFoto,fotos:nyFotos}:m));
-    if(mcModal?.id===mcId) setMcModal(p=>({...p,foto:primærFoto,fotos:nyFotos}));
+    // Generér lille thumbnail af primærbilledet til oversigten
+    const thumb = primærFoto ? await lavThumb(primærFoto) : "";
+    setMcs(p=>p.map(m=>m.id===mcId?{...m,foto:primærFoto,fotos:nyFotos,thumb}:m));
+    if(mcModal?.id===mcId) setMcModal(p=>({...p,foto:primærFoto,fotos:nyFotos,thumb}));
     try{
-      await db(`mcs?id=eq.${mcId}`,{method:"PATCH",body:JSON.stringify({foto:primærFoto,fotos:nyFotos}),prefer:"return=minimal"});
+      await db(`mcs?id=eq.${mcId}`,{method:"PATCH",body:JSON.stringify({foto:primærFoto,fotos:nyFotos,thumb}),prefer:"return=minimal"});
     }
-    catch(e){ console.error("Foto DB fejl:",e); }
+    catch(e){
+      console.error("Foto DB fejl:",e);
+      // Hvis thumb-kolonnen mangler (migration ikke kørt): prøv uden thumb
+      if(e.message?.includes("thumb")||e.message?.includes("400")||e.message?.includes("PGRST")){
+        try{ await db(`mcs?id=eq.${mcId}`,{method:"PATCH",body:JSON.stringify({foto:primærFoto,fotos:nyFotos}),prefer:"return=minimal"}); }
+        catch(e2){ console.error("Foto DB fejl (uden thumb):",e2); }
+      }
+    }
     notify(nyFotos.length>1?`${nyFotos.length} billeder ✓`:"Billede uploadet ✓");
   };
 
@@ -2088,7 +2145,7 @@ export default function App() {
                                     <div style={{fontSize:10,color:"#aaa",fontWeight:600,marginTop:2}}>{mc.beskrivelse}</div>
                                   </div>
                                   <div style={{background:"#111",display:"flex",alignItems:"center",justifyContent:"center",padding:"4px 0"}}>
-                                    <img src={mc.foto||MC_SVG} alt="" style={{width:"100%",maxWidth:150,height:70,objectFit:mc.foto?"cover":"contain",borderRadius:mc.foto?6:0}}/>
+                                    {(()=>{const bild=mc.thumb||mc.foto;return <img src={bild||MC_SVG} alt="" loading="lazy" style={{width:"100%",maxWidth:150,height:70,objectFit:bild?"cover":"contain",borderRadius:bild?6:0}}/>;})()}
                                   </div>
                                   <div style={{background:"#111",padding:"5px 8px"}}>
                                     <div style={{background:"#222",borderRadius:4,height:16,overflow:"hidden",position:"relative"}}>
@@ -2133,11 +2190,17 @@ export default function App() {
                   }
                 }} onVisFaktura={(f)=>{setFakDetail(f);pushNav({nav:"oversigt",mcModal:liveMc,editMc:null,nyFak:null,fakDetail:f});}} onMove={()=>setMoveModal(liveMc.id)} onFotoUpload={onFotoUpload} onUpdateKm={(km)=>onUpdateKm(liveMc.id,km)}
                 onLazyFotoLoad={(mcId)=>{
-                  db(`mcs?select=foto,fotos&id=eq.${mcId}`).then(rows=>{
+                  db(`mcs?select=foto,fotos,thumb&id=eq.${mcId}`).then(async rows=>{
                     if(rows?.[0]) {
                       const r = rows[0];
                       const nyFotos = Array.isArray(r.fotos)&&r.fotos.length>0 ? r.fotos : (r.foto?[r.foto]:[]);
-                      setMcs(p=>p.map(m=>String(m.id)===String(mcId)?{...m,foto:r.foto||"",fotos:nyFotos}:m));
+                      // Backfill thumbnail for gamle MC'er der mangler det
+                      let thumb = r.thumb||"";
+                      if(!thumb && r.foto){
+                        thumb = await lavThumb(r.foto);
+                        if(thumb) db(`mcs?id=eq.${mcId}`,{method:"PATCH",body:JSON.stringify({thumb}),prefer:"return=minimal"}).catch(()=>{});
+                      }
+                      setMcs(p=>p.map(m=>String(m.id)===String(mcId)?{...m,foto:r.foto||"",fotos:nyFotos,thumb:thumb||m.thumb}:m));
                     }
                   }).catch(()=>{});
                 }} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor} notify={notify} isAdmin={isAdmin} onUpdateNoter={(tekst)=>onUpdateNoter(liveMc.id,tekst)}/>;

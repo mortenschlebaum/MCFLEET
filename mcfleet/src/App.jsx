@@ -163,13 +163,15 @@ const ydToDb = y => ({id: y.id, nr: y.nr||"", navn: y.navn||"", pris: y.pris||0}
 const opgFromDb = r => ({
   id: r.id, titel: r.titel||"", beskrivelse: r.beskrivelse||"",
   lokation: r.lokation||"", senestUdfoert: r.senest_udfoert||"",
-  oprettet: r.oprettet||"", udfoert: r.udfoert||false, udfoertDato: r.udfoert_dato||"",
+  oprettet: r.oprettet||"", oprettetAf: r.oprettet_af||"",
+  udfoert: r.udfoert||false, udfoertDato: r.udfoert_dato||"",
   mcId: r.mc_id||null, mcReg: r.mc_reg||"", foto: r.foto||"",
 });
 const opgToDb = o => ({
   id: o.id, titel: o.titel||"", beskrivelse: o.beskrivelse||"",
   lokation: o.lokation||"", senest_udfoert: o.senestUdfoert||"",
-  oprettet: o.oprettet||"", udfoert: o.udfoert||false, udfoert_dato: o.udfoertDato||"",
+  oprettet: o.oprettet||"", oprettet_af: o.oprettetAf||"",
+  udfoert: o.udfoert||false, udfoert_dato: o.udfoertDato||"",
   mc_id: o.mcId||null, mc_reg: o.mcReg||"", foto: o.foto||"",
 });
 
@@ -1596,12 +1598,13 @@ export default function App() {
   };
 
   // Opret opgave direkte fra MC
-  const opretOpgaveFraMc = (mc, beskrivelse, senestUdfoert, foto) => {
+  const opretOpgaveFraMc = (mc, beskrivelse, senestUdfoert, foto, oprettetAf) => {
     const titel = `${mc.reg} — ${mc.beskrivelse}`;
     const gemMedFoto = (fotoData) => {
       const ny = {
         id: Date.now(), titel, beskrivelse: (beskrivelse||"").trim(),
         lokation: mc.location||"", senestUdfoert, oprettet: todayStr,
+        oprettetAf: (oprettetAf||"").trim(),
         udfoert: false, udfoertDato: null,
         mcId: mc.id, mcReg: mc.reg, foto: fotoData||"",
       };
@@ -2171,7 +2174,7 @@ export default function App() {
             {/* ── MC DETALJE ── */}
             {nav==="oversigt"&&mcModal&&!nyFak&&!fakDetail&&!editMc&&(()=>{
               const liveMc=mcs.find(m=>String(m.id)===String(mcModal.id))||mcModal;
-              return <McDetalje mc={liveMc} fakturaer={fakturaer.filter(f=>f.mcId===liveMc.id)} opgaver={opgaver} onOpretOpgave={(besk,dato,foto)=>opretOpgaveFraMc(liveMc,besk,dato,foto)} onMarkerUdfoert={markerOpgaveUdfoert} onFotoKlik={setFotoModal} onBack={()=>{setMcModal(null);pushNav({nav:"oversigt",mcModal:null,editMc:null,nyFak:null,fakDetail:null});}} onEdit={(opdatMc)=>{const base=opdatMc||liveMc;setMcModal(liveMc);setEditMc({...base});pushNav({nav:"oversigt",mcModal:{id:liveMc.id},editMc:{id:base.id},nyFak:null,fakDetail:null});}} onNyFaktura={()=>{
+              return <McDetalje mc={liveMc} fakturaer={fakturaer.filter(f=>f.mcId===liveMc.id)} opgaver={opgaver} brugerNavn={bruger?.navn||bruger?.brugernavn||""} onOpretOpgave={(besk,dato,foto,oprettetAf)=>opretOpgaveFraMc(liveMc,besk,dato,foto,oprettetAf)} onMarkerUdfoert={markerOpgaveUdfoert} onFotoKlik={setFotoModal} onBack={()=>{setMcModal(null);pushNav({nav:"oversigt",mcModal:null,editMc:null,nyFak:null,fakDetail:null});}} onEdit={(opdatMc)=>{const base=opdatMc||liveMc;setMcModal(liveMc);setEditMc({...base});pushNav({nav:"oversigt",mcModal:{id:liveMc.id},editMc:{id:base.id},nyFak:null,fakDetail:null});}} onNyFaktura={()=>{
                   // Tjek om transport skal tilbydes
                   const afd = liveMc.location||"";
                   // Slå transport op fra lokationer state (kan være ændret i admin)
@@ -2252,7 +2255,12 @@ export default function App() {
 
             {/* ── OPGAVER ── */}
             {nav==="opgaver"&&(
-              <OpgaverView opgaver={opgaver} setOpgaver={setOpgaver} locations={lokationer.map(l=>l.navn)} notify={notify} visForm={visOpgaveForm} setVisForm={setVisOpgaveForm} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt} onFotoKlik={setFotoModal}/>
+              <OpgaverView opgaver={opgaver} setOpgaver={setOpgaver} locations={lokationer.map(l=>l.navn)} notify={notify} visForm={visOpgaveForm} setVisForm={setVisOpgaveForm} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt} onFotoKlik={setFotoModal} brugerNavn={bruger?.navn||bruger?.brugernavn||""} onAabenMc={(mcId)=>{
+                const mc=mcs.find(m=>String(m.id)===String(mcId));
+                if(!mc){notify("Køretøjet blev ikke fundet",true);return;}
+                setNav("oversigt"); setMcModal(mc); setEditMc(null); setNyFak(null); setFakDetail(null); setSidebarOpen(false);
+                pushNav({nav:"oversigt",mcModal:{id:mc.id},editMc:null,nyFak:null,fakDetail:null});
+              }}/>
             )}
 
             {/* ── PLANLÆGNING ── */}
@@ -2460,7 +2468,7 @@ export default function App() {
 
 // ── SUB COMPONENTS ────────────────────────────────────────────────────────────
 
-function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onUpdateNoter,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor,notify,isAdmin}) {
+function McDetalje({mc,fakturaer,opgaver,brugerNavn,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onUpdateNoter,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor,notify,isAdmin}) {
   const [kmInlineEdit, setKmInlineEdit] = React.useState(false);
   const [kmInlineVal, setKmInlineVal] = React.useState("");
   const [noteText, setNoteText] = React.useState(mc.noter||"");
@@ -2505,12 +2513,25 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
     finally{setSignersLoading(false);}
   };
   const [visOpgForm,setVisOpgForm]=React.useState(false);
-  const [opgForm,setOpgForm]=React.useState({beskrivelse:"",senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
+  const [opgForm,setOpgForm]=React.useState({beskrivelse:"",senestUdfoert:new Date().toISOString().split("T")[0],foto:"",oprettetAf:brugerNavn||""});
 
   const [gemmerOpgave,setGemmerOpgave]=React.useState(false);
 
+  const aabnOpgaveForm=()=>{
+    setOpgForm(p=>({...p,oprettetAf:(p.oprettetAf||"").trim()?p.oprettetAf:(brugerNavn||"")}));
+    setVisOpgForm(true);
+    setTimeout(()=>document.getElementById(`mc-opg-sektion-${mc.id}`)?.scrollIntoView({behavior:"smooth",block:"end"}),50);
+  };
+
   const gemOpgave=()=>{
+    const navn=(opgForm.oprettetAf||"").trim();
+    if(!navn){notify&&notify("Skriv hvem der opretter opgaven",true);return;}
     setGemmerOpgave(true);
+    const nulstil=()=>{
+      setOpgForm({beskrivelse:"",senestUdfoert:new Date().toISOString().split("T")[0],foto:"",oprettetAf:brugerNavn||""});
+      setVisOpgForm(false);
+      setGemmerOpgave(false);
+    };
     // Komprimer billede før gemning
     let fotoData = opgForm.foto;
     if(fotoData && fotoData.length > 200000) {
@@ -2522,17 +2543,14 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
         c.width = Math.round(img.width*ratio);
         c.height = Math.round(img.height*ratio);
         c.getContext("2d").drawImage(img,0,0,c.width,c.height);
-        onOpretOpgave(opgForm.beskrivelse,opgForm.senestUdfoert,c.toDataURL("image/jpeg",0.7));
-        setOpgForm({beskrivelse:"",senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
-        setVisOpgForm(false);
-        setGemmerOpgave(false);
+        onOpretOpgave(opgForm.beskrivelse,opgForm.senestUdfoert,c.toDataURL("image/jpeg",0.7),navn);
+        nulstil();
       };
+      img.onerror = () => { setGemmerOpgave(false); notify&&notify("Billedet kunne ikke behandles",true); };
       img.src = fotoData;
     } else {
-      onOpretOpgave(opgForm.beskrivelse,opgForm.senestUdfoert,fotoData);
-      setOpgForm({beskrivelse:"",senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
-      setVisOpgForm(false);
-      setGemmerOpgave(false);
+      onOpretOpgave(opgForm.beskrivelse,opgForm.senestUdfoert,fotoData,navn);
+      nulstil();
     }
   };
 
@@ -2549,7 +2567,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
         <button onClick={onMove} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📍 Flyt</button>
         <button onClick={()=>onEdit()} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>✏️ Rediger</button>
         <button onClick={onNyFaktura} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>🧾 Ny Faktura</button>
-        <button onClick={()=>{setVisOpgForm(true);setTimeout(()=>document.getElementById(`mc-opg-sektion-${mc.id}`)?.scrollIntoView({behavior:"smooth",block:"end"}),50);}} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📋 Opgave</button>
+        <button onClick={aabnOpgaveForm} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📋 Opgave</button>
         {isAdmin&&<button onClick={()=>{setKøberForm(p=>({...p,km:String(mc.km||"")}));setSlutseddelModal(true);}} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📄 Slutseddel</button>}
       </div>
 
@@ -2806,6 +2824,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                       {o.beskrivelse&&<div style={{fontSize:13,color:"#aaa",marginBottom:6,lineHeight:1.4}}>{o.beskrivelse}</div>}
                       {o.foto&&<img src={o.foto} alt="" onClick={()=>onFotoKlik&&onFotoKlik(o.foto)} style={{width:"100%",maxHeight:120,objectFit:"cover",borderRadius:6,marginBottom:6,cursor:"zoom-in"}}/>}
                       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        <span style={{fontSize:11,color:"#555"}}>Oprettet: {fmtDato(o.oprettet)||"—"} · {o.oprettetAf||"Ukendt"}</span>
                         <span style={{fontSize:11,color:"#555"}}>Senest: {fmtDato(o.senestUdfoert)}</span>
                         <span style={{fontSize:11,color:fristFarve,fontWeight:700}}>{fristTekst}</span>
                       </div>
@@ -2829,6 +2848,11 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
                 <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,fontWeight:600,textTransform:"uppercase",letterSpacing:.8}}>Beskrivelse</label>
                 <textarea value={opgForm.beskrivelse} onChange={e=>setOpgForm(p=>({...p,beskrivelse:e.target.value}))}
                   placeholder="Beskriv opgaven..." rows={3} style={{...inp,resize:"vertical"}}/>
+              </div>
+              <div>
+                <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,fontWeight:600,textTransform:"uppercase",letterSpacing:.8}}>Oprettet af</label>
+                <input value={opgForm.oprettetAf} onChange={e=>setOpgForm(p=>({...p,oprettetAf:e.target.value}))}
+                  placeholder="Navn" style={inp}/>
               </div>
               <div>
                 <label style={{display:"block",fontSize:11,color:"#777",marginBottom:3,fontWeight:600,textTransform:"uppercase",letterSpacing:.8}}>Senest udført d.</label>
@@ -2862,7 +2886,7 @@ function McDetalje({mc,fakturaer,opgaver,onOpretOpgave,onMarkerUdfoert,onFotoKli
           </div>
         ):(
           <div style={{padding:"12px 16px",borderTop:"1px solid #2a2a2a"}}>
-            <button onClick={()=>setVisOpgForm(true)}
+            <button onClick={aabnOpgaveForm}
               style={{background:"#cc0000",border:"none",color:"#fff",borderRadius:8,padding:"10px 16px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:6,width:"100%",justifyContent:"center"}}>
               + Tilføj opgave
             </button>
@@ -4177,18 +4201,22 @@ function NyFakturaView({faktura,setFaktura,mc,ydelser,addLinje,removeLinje,setAn
 }
 
 // ── Opgaver ───────────────────────────────────────────────────────────────────
-function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp,btnRed,btnGhost,onFotoKlik}) {
+function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp,btnRed,btnGhost,onFotoKlik,brugerNavn,onAabenMc}) {
   const [search,setSearch]=useState("");
   const [filterLoc,setFilterLoc]=useState("Alle");
   const [filterStatus,setFilterStatus]=useState("aktive");
-  const [form,setForm]=useState({titel:"",beskrivelse:"",lokation:locations[0],senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
+  const [sortering,setSortering]=useState("nyeste");
+  const tomForm=()=>({titel:"",beskrivelse:"",lokation:locations[0],senestUdfoert:new Date().toISOString().split("T")[0],foto:"",oprettetAf:brugerNavn||""});
+  const [form,setForm]=useState(tomForm);
 
   const tilfoej=()=>{
     if(!form.titel.trim()){notify("Skriv en titel",true);return;}
-    const ny={id:Date.now(),titel:form.titel.trim(),beskrivelse:form.beskrivelse.trim(),lokation:form.lokation,senestUdfoert:form.senestUdfoert,oprettet:new Date().toISOString().split("T")[0],udfoert:false,udfoertDato:null,mcId:null,mcReg:"",foto:form.foto||""};
+    const navn=(form.oprettetAf||"").trim();
+    if(!navn){notify("Skriv hvem der opretter opgaven",true);return;}
+    const ny={id:Date.now(),titel:form.titel.trim(),beskrivelse:form.beskrivelse.trim(),lokation:form.lokation,senestUdfoert:form.senestUdfoert,oprettet:new Date().toISOString().split("T")[0],oprettetAf:navn,udfoert:false,udfoertDato:null,mcId:null,mcReg:"",foto:form.foto||""};
     setOpgaver(p=>[ny,...p]);
     db("opgaver",{method:"POST",body:JSON.stringify(opgToDb(ny)),prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
-    setForm({titel:"",beskrivelse:"",lokation:locations[0],senestUdfoert:new Date().toISOString().split("T")[0],foto:""});
+    setForm(tomForm());
     setVisForm(false);
     notify("Opgave oprettet ✓");
   };
@@ -4219,8 +4247,12 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
     if(filterStatus==="aktive"&&o.udfoert) return false;
     if(filterStatus==="udfoerte"&&!o.udfoert) return false;
     if(filterLoc!=="Alle"&&o.lokation!==filterLoc) return false;
-    if(search&&!o.titel.toLowerCase().includes(search.toLowerCase())&&!o.beskrivelse.toLowerCase().includes(search.toLowerCase())) return false;
+    if(search&&!o.titel.toLowerCase().includes(search.toLowerCase())&&!o.beskrivelse.toLowerCase().includes(search.toLowerCase())&&!(o.mcReg||"").toLowerCase().includes(search.toLowerCase())) return false;
     return true;
+  }).sort((a,b)=>{
+    if(sortering==="aeldste") return (a.oprettet||"9999").localeCompare(b.oprettet||"9999") || (Number(a.id)||0)-(Number(b.id)||0);
+    if(sortering==="frist") return (a.senestUdfoert||"9999").localeCompare(b.senestUdfoert||"9999") || (Number(a.id)||0)-(Number(b.id)||0);
+    return (b.oprettet||"0000").localeCompare(a.oprettet||"0000") || (Number(b.id)||0)-(Number(a.id)||0);
   });
 
   const sel={...inp,background:"#1e1e1e",border:"1px solid #333",height:38,padding:"0 10px",fontSize:13,width:"auto"};
@@ -4230,7 +4262,10 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
       {/* Header */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,gap:10,flexWrap:"wrap"}}>
         <h1 style={{margin:0,fontSize:22,fontWeight:700,color:"#fff"}}>Opgaver</h1>
-        <button onClick={()=>setVisForm(v=>!v)} style={{...btnRed,gap:8}}>
+        <button onClick={()=>{
+          if(!visForm) setForm(p=>({...p,oprettetAf:(p.oprettetAf||"").trim()?p.oprettetAf:(brugerNavn||"")}));
+          setVisForm(v=>!v);
+        }} style={{...btnRed,gap:8}}>
           <span style={{fontSize:18,lineHeight:1}}>+</span> Tilføj opgave
         </button>
       </div>
@@ -4248,6 +4283,10 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
               <label style={{display:"block",fontSize:11,color:"#888",marginBottom:4,fontWeight:600,letterSpacing:.8,textTransform:"uppercase"}}>Beskrivelse</label>
               <textarea value={form.beskrivelse} onChange={e=>setForm(p=>({...p,beskrivelse:e.target.value}))} placeholder="Beskriv opgaven..." rows={3}
                 style={{...inp,resize:"vertical"}}/>
+            </div>
+            <div>
+              <label style={{display:"block",fontSize:11,color:"#888",marginBottom:4,fontWeight:600,letterSpacing:.8,textTransform:"uppercase"}}>Oprettet af</label>
+              <input value={form.oprettetAf} onChange={e=>setForm(p=>({...p,oprettetAf:e.target.value}))} placeholder="Navn" style={inp}/>
             </div>
             <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
               <div style={{flex:"1 1 140px"}}>
@@ -4299,6 +4338,11 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
           <option value="udfoerte">Udførte</option>
           <option value="alle">Alle</option>
         </select>
+        <select value={sortering} onChange={e=>setSortering(e.target.value)} style={sel}>
+          <option value="nyeste">Nyeste først</option>
+          <option value="aeldste">Ældste først</option>
+          <option value="frist">Efter frist</option>
+        </select>
         <select value={filterLoc} onChange={e=>setFilterLoc(e.target.value)} style={sel}>
           <option value="Alle">Alle afdelinger</option>
           {[...locations].sort((a,b)=>{
@@ -4331,7 +4375,15 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
                   <div style={{fontSize:12,color:"#cc6666",marginBottom:o.beskrivelse?6:0,fontWeight:600}}>📍 {o.lokation}</div>
                   {o.beskrivelse&&<div style={{fontSize:13,color:"#aaa",lineHeight:1.5,marginBottom:o.foto?8:10}}>{o.beskrivelse}</div>}
                   {o.foto&&<img src={o.foto} alt="" onClick={()=>onFotoKlik&&onFotoKlik(o.foto)} style={{width:"100%",maxHeight:160,objectFit:"cover",borderRadius:8,marginBottom:10,cursor:"zoom-in"}}/>}
-                  {o.mcReg&&<div style={{fontSize:11,color:"#555",marginBottom:6,fontWeight:600}}>🏍 MC: {o.mcReg}</div>}
+                  {o.mcId?(
+                    <button type="button" onClick={()=>onAabenMc&&onAabenMc(o.mcId)}
+                      style={{background:"none",border:"none",padding:0,marginBottom:6,fontSize:12,color:"#60a5fa",fontWeight:700,cursor:"pointer",textAlign:"left"}}>
+                      🏍 {o.mcReg||"Åbn køretøj"} →
+                    </button>
+                  ):o.mcReg?(
+                    <div style={{fontSize:11,color:"#555",marginBottom:6,fontWeight:600}}>🏍 MC: {o.mcReg}</div>
+                  ):null}
+                  <div style={{fontSize:11,color:"#888",marginBottom:2}}>Oprettet {fmtDato(o.oprettet)||"—"} · {o.oprettetAf||"Ukendt"}</div>
                   {/* Bund: dato boks + knapper */}
                   <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginTop:10,flexWrap:"wrap"}}>
                     <div style={{background:"#252525",borderRadius:8,padding:"7px 12px",textAlign:"center"}}>

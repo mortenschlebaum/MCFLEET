@@ -114,6 +114,37 @@ const db = async (path, opts={}) => {
   return txt ? JSON.parse(txt) : [];
 };
 
+// Henter rækker i sider, så ét kald ikke rammer Supabase statement timeout.
+const hentSider = async (path, batch = 40) => {
+  const alle = [];
+  for (let offset = 0; ; offset += batch) {
+    const sep = path.includes("?") ? "&" : "?";
+    const del = await db(`${path}${sep}limit=${batch}&offset=${offset}`);
+    alle.push(...(del || []));
+    if (!del || del.length < batch) break;
+  }
+  return alle;
+};
+
+// Billeder ligger som store base64-strenge. Ét kald pr. række holder forespørgslen under timeout.
+const hentEnkelt = async (tabel, ids, select, samtidige, onFremskridt) => {
+  const map = new Map();
+  let naeste = 0;
+  let faerdig = 0;
+  const worker = async () => {
+    while (naeste < ids.length) {
+      const id = ids[naeste++];
+      const rows = await db(`${tabel}?select=${select}&id=eq.${id}`);
+      if (rows[0]) map.set(String(rows[0].id), rows[0]);
+      faerdig++;
+      if (onFremskridt) onFremskridt(faerdig, ids.length);
+    }
+  };
+  const n = Math.min(samtidige, ids.length);
+  if (n > 0) await Promise.all(Array.from({ length: n }, () => worker()));
+  return map;
+};
+
 // MC helpers: konverter snake_case DB → camelCase app og omvendt
 const mcFromDb = r => ({
   id: Number(r.id), mcNr: r.mc_nr, reg: r.reg, stel: r.stel,
@@ -1486,22 +1517,42 @@ export default function App() {
   const notify=(msg,err)=>{setNote({msg,err});setTimeout(()=>setNote(null),2600);};
 
   const downloadBackup = async () => {
-    notify("Henter backup...");
+    setNote({ msg: "Henter backup...", err: false });
     try {
-      const [dbMcs, dbFak, dbYd, dbOpg, dbLok, dbBrugere] = await Promise.all([
-        db("mcs?order=id"),
-        db("fakturaer?order=id"),
-        db("ydelser?order=id"),
-        db("opgaver?order=id"),
-        db("lokationer?order=id"),
-        db("brugere?order=id"),
+      const mcUdenBillede = "id,mc_nr,reg,stel,gps,syn,km,location,beskrivelse,lokations_log,km_log,created_at,foerste_reg,naeste_syn,noter,type,thumb";
+      const opgUdenBillede = "id,titel,beskrivelse,lokation,senest_udfoert,oprettet,udfoert,udfoert_dato,created_at,mc_id,mc_reg,oprettet_af";
+      const [dbMcs, dbFak, dbYd, dbOpg, dbLok, dbBrugere, mcMedFoto, opgMedFoto] = await Promise.all([
+        hentSider(`mcs?select=${mcUdenBillede}&order=id`),
+        hentSider("fakturaer?order=id"),
+        hentSider("ydelser?order=id"),
+        hentSider(`opgaver?select=${opgUdenBillede}&order=id`),
+        hentSider("lokationer?order=id"),
+        hentSider("brugere?order=id"),
+        hentSider("mcs?select=id&foto=neq.&order=id", 100),
+        hentSider("opgaver?select=id&foto=neq.&order=id", 100),
       ]);
+      const mcBilleder = await hentEnkelt(
+        "mcs", mcMedFoto.map(r => r.id), "id,foto,fotos", 2,
+        (nu, ialt) => setNote({ msg: `Henter MC-billeder ${nu}/${ialt}...`, err: false })
+      );
+      const opgBilleder = await hentEnkelt(
+        "opgaver", opgMedFoto.map(r => r.id), "id,foto", 2,
+        (nu, ialt) => setNote({ msg: `Henter opgavebilleder ${nu}/${ialt}...`, err: false })
+      );
+      const mcsMedBilleder = dbMcs.map(r => {
+        const b = mcBilleder.get(String(r.id));
+        return { ...r, foto: b?.foto || "", fotos: b?.fotos || [] };
+      });
+      const opgMedBilleder = dbOpg.map(r => {
+        const b = opgBilleder.get(String(r.id));
+        return { ...r, foto: b?.foto || "" };
+      });
       const backup = {
         dato: new Date().toISOString(),
-        mcs: dbMcs,
+        mcs: mcsMedBilleder,
         fakturaer: dbFak,
         ydelser: dbYd,
-        opgaver: dbOpg,
+        opgaver: opgMedBilleder,
         lokationer: dbLok,
         brugere: dbBrugere.map(b => ({ ...b, adgangskode: "***" })),
       };

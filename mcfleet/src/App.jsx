@@ -208,6 +208,8 @@ const opgToDb = o => ({
 
 const brugerFromDb = r => ({id: r.id, brugernavn: r.brugernavn, adgangskode: r.adgangskode, navn: r.navn||"", rolle: r.rolle||"bruger"});
 const brugerToDb = b => ({id: b.id, brugernavn: b.brugernavn, adgangskode: b.adgangskode||"", navn: b.navn||"", rolle: b.rolle||"bruger"});
+const rolleNavn = r => r==="admin"?"Admin":r==="kørelærer"?"Kørelærer":"Bruger";
+const rolleFarve = r => r==="admin"?"#f87171":r==="kørelærer"?"#fbbf24":"#60a5fa";
 
 const LOCATIONS = ["Kolding","KTA Kolding","Århus MC","Hobro","Herning","Viborg","Randers","Horsens","Odense","Lager / Depot","Esbjerg","Aabenraa","MC til salg","Solgte MC'er"];
 
@@ -1254,6 +1256,7 @@ function BrugerAdmin({brugere,setBrugere,notify}) {
               <label style={lbl}>Rolle</label>
               <select value={cur.rolle} onChange={e=>set(p=>({...p,rolle:e.target.value}))} style={lInp}>
                 <option value="bruger">Bruger — kan se og oprette fakturaer</option>
+                <option value="kørelærer">Kørelærer — kan se fakturaer, ikke ændre dem</option>
                 <option value="admin">Admin — fuld adgang inkl. brugerstyring</option>
               </select>
             </div>
@@ -1278,7 +1281,7 @@ function BrugerAdmin({brugere,setBrugere,notify}) {
                 </div>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontWeight:700,fontSize:13,color:"#fff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{b.navn}</div>
-                  <div style={{fontSize:12,color:"#888"}}>{b.brugernavn} · <span style={{color:b.rolle==="admin"?"#f87171":"#60a5fa"}}>{b.rolle==="admin"?"Admin":"Bruger"}</span></div>
+                  <div style={{fontSize:12,color:"#888"}}>{b.brugernavn} · <span style={{color:rolleFarve(b.rolle)}}>{rolleNavn(b.rolle)}</span></div>
                 </div>
                 <div style={{display:"flex",gap:6,flexShrink:0}}>
                   <button onClick={()=>setRediger({...b})} style={{...btnGhost,padding:"5px 10px",fontSize:12}}>✏️</button>
@@ -1513,6 +1516,24 @@ export default function App() {
   };
 
   const isAdmin=bruger?.rolle==="admin";
+  const erKoerelaerer=bruger?.rolle==="kørelærer";
+  const kanSkriveFaktura=!!bruger && !erKoerelaerer;
+
+  React.useEffect(() => {
+    if (!erKoerelaerer) return;
+    const spaerret = nav==="administration" || nav==="brugere" || nav==="slutsedler";
+    if (spaerret) {
+      setNav("oversigt");
+      setMcModal(null); setEditMc(null); setNyFak(null); setFakDetail(null); setEditFakId(null);
+      window.history.replaceState(
+        { nav:"oversigt", mcModal:null, editMc:null, nyFak:null, fakDetail:null },
+        "", "#oversigt"
+      );
+    } else if (nyFak) {
+      setNyFak(null);
+      setEditFakId(null);
+    }
+  }, [erKoerelaerer, nav, nyFak]);
 
   const notify=(msg,err)=>{setNote({msg,err});setTimeout(()=>setNote(null),2600);};
 
@@ -1900,6 +1921,7 @@ export default function App() {
   const setPrisL=(yId,v)=>setNyFak(f=>({...f,linjer:f.linjer.map(l=>l.yId===yId?{...l,pris:Number(v)}:l)}));
   const fakTotal=(linjer)=>linjer.reduce((s,l)=>s+l.antal*l.pris,0);
   const gemFak=async()=>{
+    if(!kanSkriveFaktura){notify("Du har ikke adgang til at ændre fakturaer",true);return;}
     if(!nyFak.titel?.trim()){notify("Udfyld reparationstitel",true);return;}
     if(!nyFak.note?.trim()){notify("Udfyld reparationsbeskrivelse",true);return;}
     if(!nyFak.linjer.length){notify("Tilføj mindst én linje",true);return;}
@@ -1934,8 +1956,12 @@ export default function App() {
       notify(`${f.id} oprettet ✓`);
     }
   };
-  const startRedigerFak=(f)=>{setNyFak({mcId:f.mcId,linjer:[...f.linjer],dato:f.dato,note:f.note||"",titel:f.titel||""});setEditFakId(f.id);setFakDetail(null);};
+  const startRedigerFak=(f)=>{
+    if(!kanSkriveFaktura){notify("Du har ikke adgang til at ændre fakturaer",true);return;}
+    setNyFak({mcId:f.mcId,linjer:[...f.linjer],dato:f.dato,note:f.note||"",titel:f.titel||""});setEditFakId(f.id);setFakDetail(null);
+  };
   const sætFaktureret=async(fakId,værdi)=>{
+    if(!kanSkriveFaktura){notify("Du har ikke adgang til at ændre fakturaer",true);return;}
     setFakturaer(p=>p.map(f=>f.id===fakId?{...f,faktureret:værdi}:f));
     if(fakDetail?.id===fakId) setFakDetail(p=>({...p,faktureret:værdi}));
     try{ await db(`fakturaer?id=eq.${fakId}`,{method:"PATCH",body:JSON.stringify({faktureret:værdi}),prefer:"return=minimal"}); }
@@ -2013,7 +2039,7 @@ export default function App() {
     {id:"planlægning",icon:"📅",label:"Planlægning"},
     {id:"fakturaer",icon:"🧾",label:"Fakturaer"},
     ...(isAdmin?[{id:"slutsedler",icon:"📄",label:"Slutsedler"}]:[]),
-    {id:"administration",icon:"⚙️",label:"Administration"},
+    ...(!erKoerelaerer?[{id:"administration",icon:"⚙️",label:"Administration"}]:[]),
     ...(isAdmin?[{id:"brugere",icon:"👥",label:"Brugere"}]:[]),
   ];
 
@@ -2081,7 +2107,7 @@ export default function App() {
           </div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:13,fontWeight:600,color:"#fff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{bruger.navn}</div>
-            <div style={{fontSize:11,color:bruger.rolle==="admin"?"#f87171":"#60a5fa"}}>{bruger.rolle==="admin"?"Admin":"Bruger"}</div>
+            <div style={{fontSize:11,color:rolleFarve(bruger.rolle)}}>{rolleNavn(bruger.rolle)}</div>
           </div>
           {isAdmin&&<button onClick={downloadBackup} title="Download backup" className="tap" style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:16,padding:"4px",lineHeight:1}}>💾</button>}
           <button onClick={logout} title="Log ud" style={{background:"none",border:"none",color:"#666",cursor:"pointer",fontSize:18,padding:"4px",lineHeight:1}} className="tap">⏻</button>
@@ -2257,7 +2283,7 @@ export default function App() {
                       setMcs(p=>p.map(m=>String(m.id)===String(mcId)?{...m,foto:r.foto||"",fotos:nyFotos,thumb:thumb||m.thumb}:m));
                     }
                   }).catch(()=>{});
-                }} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor} notify={notify} isAdmin={isAdmin} onUpdateNoter={(tekst)=>onUpdateNoter(liveMc.id,tekst)}/>;
+                }} SC={SC} SL={SL} synStatus={synStatus} fmt={fmt} inp={inp} btnRed={btnRed} btnGhost={btnGhost} MC_SVG={MC_SVG} kmColor={kmColor} notify={notify} isAdmin={isAdmin} kanOpretteFaktura={kanSkriveFaktura} onUpdateNoter={(tekst)=>onUpdateNoter(liveMc.id,tekst)}/>;
             })()}
 
             {/* ── REDIGER MC ── */}
@@ -2266,22 +2292,22 @@ export default function App() {
             )}
 
             {/* ── NY FAKTURA ── */}
-            {nav==="oversigt"&&nyFak&&!fakDetail&&(
+            {nav==="oversigt"&&nyFak&&!fakDetail&&kanSkriveFaktura&&(
               <NyFakturaView faktura={nyFak} setFaktura={setNyFak} mc={mcs.find(m=>m.id===nyFak.mcId)} ydelser={ydelser} addLinje={addLinje} removeLinje={removeLinje} setAntal={setAntal} setPrisL={setPrisL} fakTotal={fakTotal} onGem={gemFak} onCancel={()=>{setNyFak(null);setEditFakId(null);window.history.back();}} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt} editMode={!!editFakId}/>
             )}
 
             {/* ── FAKTURA DETALJE ── */}
             {fakDetail&&(
-              <FakturaDetalje faktura={fakDetail} onBack={()=>window.history.back()} onRediger={startRedigerFak} onSætFaktureret={sætFaktureret} fmt={fmt} btnGhost={btnGhost} btnRed={btnRed} lokationer={lokationer} notify={notify} isAdmin={isAdmin}/>
+              <FakturaDetalje faktura={fakDetail} onBack={()=>window.history.back()} onRediger={startRedigerFak} onSætFaktureret={sætFaktureret} fmt={fmt} btnGhost={btnGhost} btnRed={btnRed} lokationer={lokationer} notify={notify} isAdmin={isAdmin} kanRedigere={kanSkriveFaktura}/>
             )}
 
             {/* ── ALLE FAKTURAER ── */}
             {nav==="fakturaer"&&!fakDetail&&(
-              <AlleFakturaer fakturaer={fakturaer} onVis={(f)=>{setFakDetail(f);pushNav({nav:"fakturaer",mcModal:null,editMc:null,nyFak:null,fakDetail:f});}} onSætFaktureret={sætFaktureret} fmt={fmt} inp={inp} btnGhost={btnGhost} filterFak={fakFilterFak} setFilterFak={setFakFilterFak} filterAfd={fakFilterAfd} setFilterAfd={setFakFilterAfd}/>
+              <AlleFakturaer fakturaer={fakturaer} onVis={(f)=>{setFakDetail(f);pushNav({nav:"fakturaer",mcModal:null,editMc:null,nyFak:null,fakDetail:f});}} onSætFaktureret={sætFaktureret} fmt={fmt} inp={inp} btnGhost={btnGhost} filterFak={fakFilterFak} setFilterFak={setFakFilterFak} filterAfd={fakFilterAfd} setFilterAfd={setFakFilterAfd} kanSkrive={kanSkriveFaktura}/>
             )}
 
             {/* ── ADMINISTRATION ── */}
-            {nav==="administration"&&(
+            {nav==="administration"&&!erKoerelaerer&&(
               <YdelserView ydelser={ydelser} nyYdelse={nyYdelse} setNyYdelse={setNyYdelse} editYdelse={editYdelse} setEditYdelse={setEditYdelse} onGem={gemYdelse} onSave={saveYdelse} onDel={delYdelse} lokationer={lokationer} nyLok={nyLok} setNyLok={setNyLok} editLok={editLok} setEditLok={setEditLok} onOpretLok={opretLokation} onGemLok={gemRedigerLokation} inp={inp} btnRed={btnRed} btnGhost={btnGhost} fmt={fmt}
                 mcs={mcs} onBulkOpdater={async(opdateringer)=>{
                   // Opdater kun de felter der rent faktisk ændrer sig — IKKE hele objektet
@@ -2519,7 +2545,7 @@ export default function App() {
 
 // ── SUB COMPONENTS ────────────────────────────────────────────────────────────
 
-function McDetalje({mc,fakturaer,opgaver,brugerNavn,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onUpdateNoter,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor,notify,isAdmin}) {
+function McDetalje({mc,fakturaer,opgaver,brugerNavn,onOpretOpgave,onMarkerUdfoert,onFotoKlik,onBack,onEdit,onNyFaktura,onVisFaktura,onMove,onFotoUpload,onUpdateKm,onUpdateNoter,onLazyFotoLoad,SC,SL,synStatus,fmt,inp,btnRed,btnGhost,MC_SVG,kmColor,notify,isAdmin,kanOpretteFaktura=true}) {
   const [kmInlineEdit, setKmInlineEdit] = React.useState(false);
   const [kmInlineVal, setKmInlineVal] = React.useState("");
   const [noteText, setNoteText] = React.useState(mc.noter||"");
@@ -2617,7 +2643,7 @@ function McDetalje({mc,fakturaer,opgaver,brugerNavn,onOpretOpgave,onMarkerUdfoer
       <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
         <button onClick={onMove} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📍 Flyt</button>
         <button onClick={()=>onEdit()} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>✏️ Rediger</button>
-        <button onClick={onNyFaktura} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>🧾 Ny Faktura</button>
+        {kanOpretteFaktura&&<button onClick={onNyFaktura} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>🧾 Ny Faktura</button>}
         <button onClick={aabnOpgaveForm} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📋 Opgave</button>
         {isAdmin&&<button onClick={()=>{setKøberForm(p=>({...p,km:String(mc.km||"")}));setSlutseddelModal(true);}} style={{...btnGhost,fontSize:13,padding:"8px 14px"}}>📄 Slutseddel</button>}
       </div>
@@ -4474,7 +4500,7 @@ function OpgaverView({opgaver,setOpgaver,locations,notify,visForm,setVisForm,inp
 }
 
 
-function AlleFakturaer({fakturaer,onVis,onSætFaktureret,fmt,inp,btnGhost,filterFak,setFilterFak,filterAfd,setFilterAfd}) {
+function AlleFakturaer({fakturaer,onVis,onSætFaktureret,fmt,inp,btnGhost,filterFak,setFilterFak,filterAfd,setFilterAfd,kanSkrive=true}) {
   const [search,setSearch]=useState("");
   const afdelinger=["Alle",...new Set(fakturaer.map(f=>f.afdeling).filter(Boolean))];
   const fil=fakturaer.filter(f=>{
@@ -4527,11 +4553,18 @@ function AlleFakturaer({fakturaer,onVis,onSætFaktureret,fmt,inp,btnGhost,filter
                 {/* Højre: total + status + pdf */}
                 <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
                   <span style={{fontWeight:700,color:"#4ade80",fontSize:13,whiteSpace:"nowrap"}}>{fmt(f.total)} kr</span>
-                  <button onClick={e=>{e.stopPropagation();onSætFaktureret(f.id,!f.faktureret);}}
-                    style={{background:f.faktureret?"#1a3a2a":"#2a2a2a",border:`1px solid ${f.faktureret?"#22c55e55":"#444"}`,
-                      color:f.faktureret?"#4ade80":"#888",borderRadius:6,padding:"4px 8px",fontSize:10,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
-                    {f.faktureret?"✓ Fak.":"○ Afv."}
-                  </button>
+                  {kanSkrive ? (
+                    <button onClick={e=>{e.stopPropagation();onSætFaktureret(f.id,!f.faktureret);}}
+                      style={{background:f.faktureret?"#1a3a2a":"#2a2a2a",border:`1px solid ${f.faktureret?"#22c55e55":"#444"}`,
+                        color:f.faktureret?"#4ade80":"#888",borderRadius:6,padding:"4px 8px",fontSize:10,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                      {f.faktureret?"✓ Fak.":"○ Afv."}
+                    </button>
+                  ) : (
+                    <span style={{background:f.faktureret?"#1a3a2a":"#2a2a2a",border:`1px solid ${f.faktureret?"#22c55e55":"#444"}`,
+                      color:f.faktureret?"#4ade80":"#888",borderRadius:6,padding:"4px 8px",fontSize:10,fontWeight:700,whiteSpace:"nowrap"}}>
+                      {f.faktureret?"✓ Fak.":"○ Afv."}
+                    </span>
+                  )}
                   <button onClick={e=>{e.stopPropagation();genPDF(f);}}
                     style={{background:"#252525",border:"1px solid #444",color:"#ccc",borderRadius:6,padding:"4px 8px",fontSize:10,fontWeight:700,cursor:"pointer"}}>
                     ⬇
@@ -4547,7 +4580,7 @@ function AlleFakturaer({fakturaer,onVis,onSætFaktureret,fmt,inp,btnGhost,filter
   );
 }
 
-function FakturaDetalje({faktura,onBack,onRediger,onSætFaktureret,fmt,btnGhost,btnRed,lokationer=[],notify,isAdmin=false}) {
+function FakturaDetalje({faktura,onBack,onRediger,onSætFaktureret,fmt,btnGhost,btnRed,lokationer=[],notify,isAdmin=false,kanRedigere=true}) {
   const [sender,setSender] = React.useState(false);
   const [sendtStatus,setSendtStatus] = React.useState(null);
 
@@ -4771,7 +4804,7 @@ function FakturaDetalje({faktura,onBack,onRediger,onSætFaktureret,fmt,btnGhost,
             borderRadius:8,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer",opacity:sender?0.6:1}}>
           {sender?"⏳ Sender...":sendtStatus==="ok"?"✓ Sendt":sendtStatus==="fejl"?"✗ Fejl — prøv igen":"📤 Send til e-conomic"}
         </button>}
-        <button onClick={()=>onRediger(faktura)} style={{...btnRed,fontSize:13,padding:"8px 16px"}}>✏️ Rediger</button>
+        {kanRedigere && <button onClick={()=>onRediger(faktura)} style={{...btnRed,fontSize:13,padding:"8px 16px"}}>✏️ Rediger</button>}
       </div>
       <div style={{background:"#b30000",borderRadius:10,padding:"16px 14px",marginBottom:12}}>
         <div style={{display:"flex",gap:20,flexWrap:"wrap",marginBottom:faktura.note?12:0}}>

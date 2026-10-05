@@ -206,8 +206,31 @@ const opgToDb = o => ({
   mc_id: o.mcId||null, mc_reg: o.mcReg||"", foto: o.foto||"",
 });
 
-const brugerFromDb = r => ({id: r.id, brugernavn: r.brugernavn, adgangskode: r.adgangskode, navn: r.navn||"", rolle: r.rolle||"bruger"});
-const brugerToDb = b => ({id: b.id, brugernavn: b.brugernavn, adgangskode: b.adgangskode||"", navn: b.navn||"", rolle: b.rolle||"bruger"});
+const brugerFromDb = r => ({id: r.id, brugernavn: r.brugernavn, adgangskode: r.adgangskode, navn: r.navn||"", rolle: r.rolle||"bruger", email: r.email||""});
+const brugerToDb = b => ({id: b.id, brugernavn: b.brugernavn, adgangskode: b.adgangskode||"", navn: b.navn||"", rolle: b.rolle||"bruger", email: b.email||""});
+
+const gemBrugerRaekke = async (metode, path, row) => {
+  const body = brugerToDb(row);
+  try {
+    await db(path, {method:metode, body:JSON.stringify(body), prefer:"return=minimal"});
+  } catch (e) {
+    if (!/email/i.test(String(e.message||""))) throw e;
+    const {email:_email, ...uden} = body;
+    await db(path, {method:metode, body:JSON.stringify(uden), prefer:"return=minimal"});
+    return "uden-email";
+  }
+};
+
+const nulstilKodeApi = async (body) => {
+  const res = await fetch("/.netlify/functions/nulstil-kode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.fejl || "Noget gik galt");
+  return data;
+};
 const rolleNavn = r => r==="admin"?"Admin":r==="kørelærer"?"Kørelærer":"Bruger";
 const rolleFarve = r => r==="admin"?"#f87171":r==="kørelærer"?"#fbbf24":"#60a5fa";
 
@@ -978,11 +1001,129 @@ const INIT_USERS = [
   {id:1, brugernavn:"admin", adgangskode:"Lisbeth2024", rolle:"admin", navn:"Administrator"},
 ];
 
+function GlemtKode({onTilbage}) {
+  const [brugernavn,setBrugernavn]=useState("");
+  const [kode,setKode]=useState("");
+  const [ny,setNy]=useState("");
+  const [igen,setIgen]=useState("");
+  const [sendt,setSendt]=useState(false);
+  const [besked,setBesked]=useState("");
+  const [fejl,setFejl]=useState("");
+  const [arbejder,setArbejder]=useState(false);
+  const [faerdig,setFaerdig]=useState(false);
+
+  const send = async () => {
+    if(!brugernavn.trim()){setFejl("Skriv brugernavn");return;}
+    setArbejder(true); setFejl(""); setBesked("");
+    try{
+      const data = await nulstilKodeApi({handling:"send", brugernavn:brugernavn.trim()});
+      setSendt(true);
+      setBesked(data.besked||"Koden er sendt.");
+    }catch(e){ setFejl(e.message||"Kunne ikke sende koden"); }
+    setArbejder(false);
+  };
+  const gem = async () => {
+    if(ny.length<6){setFejl("Ny adgangskode skal være mindst 6 tegn");return;}
+    if(ny!==igen){setFejl("De to nye koder er ikke ens");return;}
+    setArbejder(true); setFejl("");
+    try{
+      const data = await nulstilKodeApi({handling:"nulstil", brugernavn:brugernavn.trim(), kode:kode.trim(), nyKode:ny});
+      setFaerdig(true);
+      setBesked(data.besked||"Adgangskoden er ændret.");
+    }catch(e){ setFejl(e.message||"Kunne ikke gemme koden"); }
+    setArbejder(false);
+  };
+
+  return (
+    <>
+      <h2 style={{margin:"0 0 8px",fontSize:18,fontWeight:700,color:"#fff"}}>Glemt adgangskode</h2>
+      <p style={{margin:"0 0 18px",color:"#888",fontSize:13,lineHeight:1.4}}>Skriv dit brugernavn. Vi sender en kode til den email, der står på brugeren.</p>
+      {fejl&&<div style={{background:"#cc000022",border:"1px solid #cc000066",borderRadius:8,padding:"10px 14px",color:"#f87171",fontSize:13,marginBottom:16}}>{fejl}</div>}
+      {besked&&<div style={{background:"#14532d33",border:"1px solid #22c55e55",borderRadius:8,padding:"10px 14px",color:"#4ade80",fontSize:13,marginBottom:16}}>{besked}</div>}
+      {!faerdig&&(
+        <>
+          <div style={{marginBottom:14}}>
+            <label style={{display:"block",fontSize:11,color:"#888",marginBottom:5,fontWeight:600,letterSpacing:.8,textTransform:"uppercase"}}>Brugernavn</label>
+            <input value={brugernavn} onChange={e=>setBrugernavn(e.target.value)} placeholder="Skriv brugernavn..." disabled={sendt}
+              style={{...inp,background:"#252525",border:"1px solid #333",opacity:sendt?0.7:1}}/>
+          </div>
+          {!sendt ? (
+            <button onClick={send} disabled={arbejder} style={{...btnRed,width:"100%",justifyContent:"center",padding:"13px",fontSize:15,opacity:arbejder?0.6:1}}>
+              {arbejder?"Sender...":"Send kode"}
+            </button>
+          ) : (
+            <>
+              <div style={{marginBottom:14}}>
+                <label style={{display:"block",fontSize:11,color:"#888",marginBottom:5,fontWeight:600,letterSpacing:.8,textTransform:"uppercase"}}>Kode fra email</label>
+                <input value={kode} onChange={e=>setKode(e.target.value)} placeholder="6 cifre" inputMode="numeric"
+                  style={{...inp,background:"#252525",border:"1px solid #333"}}/>
+              </div>
+              <div style={{marginBottom:14}}>
+                <label style={{display:"block",fontSize:11,color:"#888",marginBottom:5,fontWeight:600,letterSpacing:.8,textTransform:"uppercase"}}>Ny adgangskode</label>
+                <input type="password" value={ny} onChange={e=>setNy(e.target.value)} placeholder="Mindst 6 tegn"
+                  style={{...inp,background:"#252525",border:"1px solid #333"}}/>
+              </div>
+              <div style={{marginBottom:18}}>
+                <label style={{display:"block",fontSize:11,color:"#888",marginBottom:5,fontWeight:600,letterSpacing:.8,textTransform:"uppercase"}}>Gentag ny adgangskode</label>
+                <input type="password" value={igen} onChange={e=>setIgen(e.target.value)} placeholder="Skriv koden igen"
+                  style={{...inp,background:"#252525",border:"1px solid #333"}}/>
+              </div>
+              <button onClick={gem} disabled={arbejder} style={{...btnRed,width:"100%",justifyContent:"center",padding:"13px",fontSize:15,opacity:arbejder?0.6:1}}>
+                {arbejder?"Gemmer...":"Gem ny adgangskode"}
+              </button>
+            </>
+          )}
+        </>
+      )}
+      <button onClick={onTilbage} style={{background:"none",border:"none",color:"#888",fontSize:13,marginTop:14,cursor:"pointer",width:"100%",textAlign:"center"}}>
+        Tilbage til login
+      </button>
+    </>
+  );
+}
+
+function SkiftKodeModal({onLuk, onGem}) {
+  const [nu,setNu]=useState("");
+  const [ny,setNy]=useState("");
+  const [igen,setIgen]=useState("");
+  const [fejl,setFejl]=useState("");
+  const [arbejder,setArbejder]=useState(false);
+  const gem = async () => {
+    if(ny.length<6){setFejl("Ny adgangskode skal være mindst 6 tegn");return;}
+    if(ny!==igen){setFejl("De to nye koder er ikke ens");return;}
+    if(ny===nu){setFejl("Vælg en anden kode end den nuværende");return;}
+    setArbejder(true); setFejl("");
+    try{ await onGem(nu, ny); onLuk(); }
+    catch(e){ setFejl(e.message||"Kunne ikke skifte kode"); }
+    setArbejder(false);
+  };
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500,padding:20}} onClick={onLuk}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#1e1e1e",borderRadius:14,padding:20,width:"100%",maxWidth:400,border:"1px solid #333"}}>
+        <div style={{fontWeight:700,fontSize:17,color:"#fff",marginBottom:6}}>Skift adgangskode</div>
+        <p style={{margin:"0 0 16px",color:"#888",fontSize:13}}>Skriv den nuværende kode, og vælg en ny på mindst 6 tegn.</p>
+        {fejl&&<div style={{background:"#cc000022",border:"1px solid #cc000066",borderRadius:8,padding:"10px 14px",color:"#f87171",fontSize:13,marginBottom:14}}>{fejl}</div>}
+        {[{v:nu,s:setNu,l:"Nuværende adgangskode"},{v:ny,s:setNy,l:"Ny adgangskode"},{v:igen,s:setIgen,l:"Gentag ny adgangskode"}].map(f=>(
+          <div key={f.l} style={{marginBottom:12}}>
+            <label style={{display:"block",fontSize:11,color:"#888",marginBottom:5,fontWeight:600,letterSpacing:.8,textTransform:"uppercase"}}>{f.l}</label>
+            <input type="password" value={f.v} onChange={e=>f.s(e.target.value)} style={{...inp,background:"#252525",border:"1px solid #333"}}/>
+          </div>
+        ))}
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button onClick={gem} disabled={arbejder} style={{...btnRed,flex:1,justifyContent:"center",padding:"12px",opacity:arbejder?0.6:1}}>{arbejder?"Gemmer...":"Gem"}</button>
+          <button onClick={onLuk} style={{...btnGhost,padding:"12px 14px"}}>Annuller</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Login skærm ──
 function LoginScreen({onLogin, fejl}) {
   const [brugernavn,setBrugernavn]=useState("");
   const [adgangskode,setAdgangskode]=useState("");
   const [vis,setVis]=useState(false);
+  const [visGlemt,setVisGlemt]=useState(false);
   const [loginLogoOk,setLoginLogoOk]=useState(true);
   return (
     <div style={{minHeight:"100dvh",background:"#111",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
@@ -1001,6 +1142,7 @@ function LoginScreen({onLogin, fejl}) {
         </div>
         {/* Formular */}
         <div style={{background:"#1a1a1a",borderRadius:14,border:"1px solid #2a2a2a",padding:"28px 24px"}}>
+          {visGlemt ? <GlemtKode onTilbage={()=>setVisGlemt(false)}/> : (<>
           <h2 style={{margin:"0 0 22px",fontSize:18,fontWeight:700,color:"#fff"}}>Log ind</h2>
           {fejl&&<div style={{background:"#cc000022",border:"1px solid #cc000066",borderRadius:8,padding:"10px 14px",color:"#f87171",fontSize:13,marginBottom:16}}>{fejl}</div>}
           <div style={{marginBottom:14}}>
@@ -1022,6 +1164,10 @@ function LoginScreen({onLogin, fejl}) {
             style={{...btnRed,width:"100%",justifyContent:"center",padding:"13px",fontSize:15}}>
             LOG IND
           </button>
+          <button onClick={()=>setVisGlemt(true)} style={{background:"none",border:"none",color:"#888",fontSize:13,marginTop:14,cursor:"pointer",width:"100%",textAlign:"center"}}>
+            Glemt adgangskode?
+          </button>
+          </>)}
         </div>
       </div>
     </div>
@@ -1206,23 +1352,30 @@ function SlutsedlerView({db,fmt}) {
 }
 
 function BrugerAdmin({brugere,setBrugere,notify}) {
-  const [ny,setNy]=useState({brugernavn:"",adgangskode:"",navn:"",rolle:"bruger"});
+  const [ny,setNy]=useState({brugernavn:"",adgangskode:"",navn:"",rolle:"bruger",email:""});
   const [rediger,setRediger]=useState(null);
   const [visKode,setVisKode]=useState({});
 
-  const opret=()=>{
+  const opret=async()=>{
     if(!ny.brugernavn||!ny.adgangskode||!ny.navn){notify("Udfyld alle felter",true);return;}
     if(brugere.find(b=>b.brugernavn===ny.brugernavn)){notify("Brugernavn er taget",true);return;}
     const nyBruger={...ny,id:Date.now()};
     setBrugere(p=>[...p,nyBruger]);
-    db("brugere",{method:"POST",body:JSON.stringify(brugerToDb(nyBruger)),prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
-    setNy({brugernavn:"",adgangskode:"",navn:"",rolle:"bruger"});
-    notify("Bruger oprettet ✓");
+    setNy({brugernavn:"",adgangskode:"",navn:"",rolle:"bruger",email:""});
+    try{
+      const status = await gemBrugerRaekke("POST","brugere",nyBruger);
+      notify(status==="uden-email"?"Bruger oprettet, men email er ikke gemt endnu":"Bruger oprettet ✓", status==="uden-email");
+    }catch(e){ notify("DB fejl: "+e.message, true); }
   };
-  const gem=()=>{
+  const gem=async()=>{
     setBrugere(p=>p.map(b=>b.id===rediger.id?rediger:b));
-    db(`brugere?id=eq.${rediger.id}`,{method:"PATCH",body:JSON.stringify(brugerToDb(rediger)),prefer:"return=minimal"}).catch(e=>console.error("DB:",e));
-    setRediger(null); notify("Bruger opdateret ✓");
+    const id = rediger.id;
+    const row = rediger;
+    setRediger(null);
+    try{
+      const status = await gemBrugerRaekke("PATCH",`brugere?id=eq.${id}`,row);
+      notify(status==="uden-email"?"Bruger opdateret, men email er ikke gemt endnu":"Bruger opdateret ✓", status==="uden-email");
+    }catch(e){ notify("DB fejl: "+e.message, true); }
   };
   const slet=(id)=>{
     if(brugere.filter(b=>b.rolle==="admin").length===1&&brugere.find(b=>b.id===id)?.rolle==="admin"){notify("Kan ikke slette den eneste admin",true);return;}
@@ -1243,12 +1396,13 @@ function BrugerAdmin({brugere,setBrugere,notify}) {
         <div style={{background:"#1a1a1a",borderRadius:10,border:"1px solid #2a2a2a",overflow:"hidden"}}>
           <div style={{padding:"12px 16px",borderBottom:"1px solid #2a2a2a",fontWeight:700,fontSize:14,color:"#fff"}}>{rediger?"Rediger bruger":"Opret ny bruger"}</div>
           <div style={{padding:16,display:"flex",flexDirection:"column",gap:12}}>
-            {[{key:"navn",l:"Fuldt navn"},{key:"brugernavn",l:"Brugernavn"},{key:"adgangskode",l:"Adgangskode"}].map(f=>(
+            {[{key:"navn",l:"Fuldt navn"},{key:"brugernavn",l:"Brugernavn"},{key:"adgangskode",l:"Adgangskode"},{key:"email",l:"Email"}].map(f=>(
               <div key={f.key}>
                 <label style={lbl}>{f.l}</label>
                 <input type={f.key==="adgangskode"?(visKode[f.key]?"text":"password"):"text"}
-                  value={cur[f.key]} onChange={e=>set(p=>({...p,[f.key]:e.target.value}))}
+                  value={cur[f.key]||""} onChange={e=>set(p=>({...p,[f.key]:e.target.value}))}
                   readOnly={!!rediger&&f.key==="brugernavn"}
+                  placeholder={f.key==="email"?"Bruges til glemt adgangskode":""}
                   style={{...lInp,opacity:rediger&&f.key==="brugernavn"?0.5:1}}/>
               </div>
             ))}
@@ -1281,7 +1435,7 @@ function BrugerAdmin({brugere,setBrugere,notify}) {
                 </div>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontWeight:700,fontSize:13,color:"#fff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{b.navn}</div>
-                  <div style={{fontSize:12,color:"#888"}}>{b.brugernavn} · <span style={{color:rolleFarve(b.rolle)}}>{rolleNavn(b.rolle)}</span></div>
+                  <div style={{fontSize:12,color:"#888"}}>{b.brugernavn}{b.email?` · ${b.email}`:""} · <span style={{color:rolleFarve(b.rolle)}}>{rolleNavn(b.rolle)}</span></div>
                 </div>
                 <div style={{display:"flex",gap:6,flexShrink:0}}>
                   <button onClick={()=>setRediger({...b})} style={{...btnGhost,padding:"5px 10px",fontSize:12}}>✏️</button>
@@ -1308,6 +1462,7 @@ export default function App() {
     }catch(e){ return null; }
   });
   const [loginFejl,setLoginFejl]=useState("");
+  const [visSkiftKode,setVisSkiftKode]=useState(false);
   const [loading,setLoading]=useState(true);
 
   // ── App state ──
@@ -1514,6 +1669,14 @@ export default function App() {
     setLoginFejl("");
     try{ localStorage.removeItem("mcfleet_bruger"); }catch(e){}
   };
+  const skiftAdgangskode=async(nuvaerende, ny)=>{
+    const rows = await db(`brugere?select=id,adgangskode&id=eq.${bruger.id}`);
+    const raekke = rows&&rows[0];
+    if(!raekke || raekke.adgangskode!==nuvaerende) throw new Error("Nuværende adgangskode er forkert");
+    await db(`brugere?id=eq.${bruger.id}`,{method:"PATCH",body:JSON.stringify({adgangskode:ny}),prefer:"return=minimal"});
+    setBrugere(p=>p.map(b=>String(b.id)===String(bruger.id)?{...b,adgangskode:ny}:b));
+    notify("Adgangskode er ændret");
+  };
 
   const isAdmin=bruger?.rolle==="admin";
   const erKoerelaerer=bruger?.rolle==="kørelærer";
@@ -1575,7 +1738,10 @@ export default function App() {
         ydelser: dbYd,
         opgaver: opgMedBilleder,
         lokationer: dbLok,
-        brugere: dbBrugere.map(b => ({ ...b, adgangskode: "***" })),
+        brugere: dbBrugere.map(b => {
+          const {reset_kode_hash:_h, reset_udloeber:_u, ...rest} = b;
+          return { ...rest, adgangskode: "***" };
+        }),
       };
       const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -2108,6 +2274,7 @@ export default function App() {
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:13,fontWeight:600,color:"#fff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{bruger.navn}</div>
             <div style={{fontSize:11,color:rolleFarve(bruger.rolle)}}>{rolleNavn(bruger.rolle)}</div>
+            <button onClick={()=>{setVisSkiftKode(true);setSidebarOpen(false);}} style={{background:"none",border:"none",color:"#888",fontSize:11,padding:0,marginTop:2,cursor:"pointer",textAlign:"left"}}>Skift kode</button>
           </div>
           {isAdmin&&<button onClick={downloadBackup} title="Download backup" className="tap" style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:16,padding:"4px",lineHeight:1}}>💾</button>}
           <button onClick={logout} title="Log ud" style={{background:"none",border:"none",color:"#666",cursor:"pointer",fontSize:18,padding:"4px",lineHeight:1}} className="tap">⏻</button>
@@ -2385,6 +2552,8 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {visSkiftKode&&<SkiftKodeModal onLuk={()=>setVisSkiftKode(false)} onGem={skiftAdgangskode}/>}
 
       {/* ── SYN OVERSKREDET MODAL ── */}
       {synModal&&(
